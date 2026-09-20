@@ -66,11 +66,27 @@ public class BuildSelfHealingService {
      *         返回最后一次的失败结果，并附上尝试次数
      */
     public BuildResult buildWithHealing(String projectPath, Long appId) {
+        return buildWithHealingOutcome(projectPath, appId).getBuildResult();
+    }
+
+    /**
+     * 带自愈的构建，并返回完整过程指标。
+     *
+     * <p>相比 {@link #buildWithHealing}，额外回报「首次是否通过」与「自愈轮数」，
+     * 供评测模块统计一次通过率与自愈成功率。</p>
+     *
+     * @param projectPath 项目目录
+     * @param appId       应用 ID（同时作为 AI 会话记忆 ID）
+     * @return 自愈结果，含最终构建结果与过程指标
+     */
+    public HealingOutcome buildWithHealingOutcome(String projectPath, Long appId) {
+        long startedAt = System.currentTimeMillis();
         BuildResult result = vueProjectBuilder.buildProjectWithResult(projectPath, appId);
+        boolean firstBuildPassed = result.isSuccess();
 
         if (result.isSuccess()) {
             emit(appId, "项目构建成功");
-            return result;
+            return HealingOutcome.of(result, true, 0, System.currentTimeMillis() - startedAt);
         }
 
         // 环境类问题不重试：改了代码也解决不了
@@ -78,19 +94,21 @@ public class BuildSelfHealingService {
             log.warn("构建失败且不可自愈（类型={}），直接返回：{}",
                     result.getFailureType(), result.getErrorMessage());
             emit(appId, "构建失败：" + result.getFailureType().getDescription());
-            return result;
+            return HealingOutcome.of(result, false, 0, System.currentTimeMillis() - startedAt);
         }
 
         if (!selfHealingProperties.isActive()) {
             log.info("自愈未启用，跳过修复流程");
             emit(appId, "构建失败：" + result.getFailureType().getDescription());
-            return result;
+            return HealingOutcome.of(result, false, 0, System.currentTimeMillis() - startedAt);
         }
 
         int maxAttempts = selfHealingProperties.getMaxAttempts();
         List<String> attemptErrors = new ArrayList<>();
+        int executedAttempts = 0;
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            executedAttempts = attempt;
             log.info("开始第 {}/{} 轮构建自愈，应用 {}，错误：{}",
                     attempt, maxAttempts, appId, StrUtil.maxLength(result.getErrorMessage(), 200));
             emit(appId, String.format("检测到构建错误，正在自动修复（第 %d/%d 次）...", attempt, maxAttempts));
@@ -109,14 +127,14 @@ public class BuildSelfHealingService {
             if (result.isSuccess()) {
                 log.info("应用 {} 在第 {} 轮自愈后构建成功", appId, attempt);
                 emit(appId, String.format("自动修复成功，项目已通过构建（共修复 %d 次）", attempt));
-                return result;
+                return HealingOutcome.of(result, false, attempt, System.currentTimeMillis() - startedAt);
             }
 
             if (!result.isHealable()) {
                 log.warn("第 {} 轮修复后失败类型变为 {}（不可自愈），终止重试",
                         attempt, result.getFailureType());
                 emit(appId, "构建失败：" + result.getFailureType().getDescription());
-                return result;
+                return HealingOutcome.of(result, false, attempt, System.currentTimeMillis() - startedAt);
             }
 
             log.warn("第 {} 轮修复后仍构建失败：{}", attempt,
@@ -126,7 +144,7 @@ public class BuildSelfHealingService {
         log.warn("应用 {} 的构建自愈已用尽 {} 轮重试，仍然失败", appId, maxAttempts);
         emit(appId, String.format("已尝试自动修复 %d 次仍未通过构建，请手动检查代码", maxAttempts));
         result.setErrorMessage(buildFinalErrorMessage(maxAttempts, attemptErrors, result));
-        return result;
+        return HealingOutcome.of(result, false, executedAttempts, System.currentTimeMillis() - startedAt);
     }
 
     /**

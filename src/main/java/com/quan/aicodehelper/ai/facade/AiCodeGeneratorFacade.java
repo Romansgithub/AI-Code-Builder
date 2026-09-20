@@ -5,9 +5,13 @@ import com.quan.aicodehelper.ai.service.AiCodeGeneratorService;
 import com.quan.aicodehelper.ai.tools.GenerationProgressRegistry;
 import com.quan.aicodehelper.constant.AppConstant;
 import com.quan.aicodehelper.core.builder.BuildResult;
+import com.quan.aicodehelper.core.eval.CodeGenEvalRecorder;
+import com.quan.aicodehelper.core.eval.GenerationMetric;
 import com.quan.aicodehelper.core.healing.BuildSelfHealingService;
+import com.quan.aicodehelper.core.healing.HealingOutcome;
 import com.quan.aicodehelper.exception.BusinessException;
 import com.quan.aicodehelper.exception.ErrorCode;
+import com.quan.aicodehelper.model.enums.BuildFailureTypeEnum;
 import com.quan.aicodehelper.model.enums.CodeGenTypeEnum;
 import com.quan.aicodehelper.ai.parser.CodeParserExecutor;
 import com.quan.aicodehelper.ai.saver.CodeFileSaverExecutor;
@@ -37,7 +41,20 @@ public class AiCodeGeneratorFacade {
     private GenerationProgressRegistry generationProgressRegistry;
 
     /**
+     * 生成质量指标采集器。
+     *
+     * <p>旁路埋点：它挂掉不能影响用户拿到代码，因此
+     * {@link CodeGenEvalRecorder#record(GenerationMetric)} 是「永不抛出」语义。</p>
+     */
+    @Resource
+    private CodeGenEvalRecorder codeGenEvalRecorder;
+
+    /**
      * 处理代码流通用方法
+     *
+     * <p>这里是「生成 → 保存 / 构建」的总入口，也是唯一能同时拿到两段耗时的地方：
+     * 进入方法时开始计时，流消费完成即为生成阶段结束，之后的构建耗时单独统计。
+     * 因此评测埋点放在这一层，而不是散落到各个分支里。</p>
      *
      * @param codeStream
      * @param codeGenTypeEnum
@@ -46,9 +63,11 @@ public class AiCodeGeneratorFacade {
 
     private Flux<String> processCodeStream(Flux<String> codeStream, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
         StringBuilder codeBuilder = new StringBuilder();
+        long startedAt = System.currentTimeMillis();
         return codeStream.doOnNext(chunk -> {
             codeBuilder.append(chunk);
         }).doOnComplete(() -> {
+            long generateCostMs = System.currentTimeMillis() - startedAt;
             if (codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT)
             {
                 // Vue 工程走「异步构建 + 自动修复」：构建本身要跑 npm，耗时以分钟计，
@@ -56,18 +75,67 @@ public class AiCodeGeneratorFacade {
                 // 用户能看到「正在修复（第 1/2 次）」这类实时反馈。
                 String projectPath = AppConstant.getCodeOutputRootDir() + File.separator
                         + codeGenTypeEnum.getValue() + "_" + appId;
-                buildVueProjectAsync(projectPath, appId);
+                buildVueProjectAsync(projectPath, appId, generateCostMs);
                 return;
             }
-            try {
-                String completeCode = codeBuilder.toString();
-                Object parsedResult = CodeParserExecutor.executeParser(completeCode, codeGenTypeEnum);
-                File saveDir = CodeFileSaverExecutor.executeSaver(parsedResult, codeGenTypeEnum, appId);
-                log.info("保存成功，路径为： " + saveDir.getAbsolutePath());
-            } catch (Exception e) {
-                log.error("保存失败：{}", e.getMessage());
-            }
+            recordSaveOutcome(codeBuilder.toString(), codeGenTypeEnum, appId, generateCostMs);
         });
+    }
+
+    /**
+     * 解析并保存代码，同时上报评测指标。
+     *
+     * <p>HTML / 多文件类型没有构建步骤，因此「一次通过率」在这里退化为
+     * 「解析与保存是否成功」—— 解析失败同样意味着这次生成对用户不可用。</p>
+     */
+    private void recordSaveOutcome(String completeCode, CodeGenTypeEnum codeGenTypeEnum,
+                                   Long appId, long generateCostMs) {
+        boolean saved = false;
+        String failureMessage = null;
+        String saveDirPath = null;
+        try {
+            Object parsedResult = CodeParserExecutor.executeParser(completeCode, codeGenTypeEnum);
+            File saveDir = CodeFileSaverExecutor.executeSaver(parsedResult, codeGenTypeEnum, appId);
+            saveDirPath = saveDir.getAbsolutePath();
+            saved = true;
+            log.info("保存成功，路径为： " + saveDirPath);
+        } catch (Exception e) {
+            failureMessage = e.getMessage();
+            log.error("保存失败：{}", failureMessage);
+        }
+
+        GenerationMetric metric = GenerationMetric.builder()
+                .appId(appId)
+                .codeGenType(codeGenTypeEnum.getValue())
+                .firstBuildPassed(saved)
+                .finalPassed(saved)
+                .healingAttempts(0)
+                .generateCostMs(generateCostMs)
+                .buildCostMs(0L)
+                .totalCostMs(generateCostMs)
+                .build();
+        if (!saved) {
+            metric.withFailure(BuildFailureTypeEnum.MISSING_DIST, failureMessage);
+        } else {
+            metric.withOutput(saveDirPath);
+        }
+        recordQuietly(metric);
+    }
+
+    /**
+     * 上报指标，并保证埋点绝不会反噬主流程。
+     *
+     * <p>{@link CodeGenEvalRecorder#record} 自身已做容错，但这里是流式回调 ——
+     * 回调里抛出的异常会被 Reactor 转成 {@code onError} 信号，
+     * 直接让整条 SSE 流中断，用户代码都收不到。
+     * 因此在这一层再兜一次，把「埋点失败」和「代码生成失败」彻底隔开。</p>
+     */
+    private void recordQuietly(GenerationMetric metric) {
+        try {
+            codeGenEvalRecorder.record(metric);
+        } catch (Exception e) {
+            log.warn("上报生成评测指标失败（不影响主流程）：{}", e.getMessage());
+        }
     }
 
     /**
@@ -75,11 +143,16 @@ public class AiCodeGeneratorFacade {
      *
      * <p>用虚拟线程承载：构建 + 自愈可能持续数分钟，占用平台线程会拖垮线程池。
      * 异常必须在此处兜底 —— 虚拟线程内抛出的异常无人接收，会被静默吞掉。</p>
+     *
+     * @param generateCostMs 代码生成阶段耗时，用于拼出端到端总耗时
      */
-    private void buildVueProjectAsync(String projectPath, Long appId) {
+    private void buildVueProjectAsync(String projectPath, Long appId, long generateCostMs) {
         Thread.ofVirtual().name("vue-build-heal-" + appId).start(() -> {
+            HealingOutcome outcome = null;
+            String unexpectedError = null;
             try {
-                BuildResult result = buildSelfHealingService.buildWithHealing(projectPath, appId);
+                outcome = buildSelfHealingService.buildWithHealingOutcome(projectPath, appId);
+                BuildResult result = outcome.getBuildResult();
                 if (result.isSuccess()) {
                     log.info("应用 {} 的 Vue 工程构建完成", appId);
                 } else {
@@ -87,10 +160,47 @@ public class AiCodeGeneratorFacade {
                             result.getFailureType(), result.getErrorMessage());
                 }
             } catch (Exception e) {
-                log.error("应用 {} 的构建自愈流程异常：{}", appId, e.getMessage(), e);
+                unexpectedError = e.getMessage();
+                log.error("应用 {} 的构建自愈流程异常：{}", appId, unexpectedError, e);
                 generationProgressRegistry.emit(appId, "项目构建过程中发生异常，请稍后重试");
+            } finally {
+                recordBuildOutcome(appId, projectPath, generateCostMs, outcome, unexpectedError);
             }
         });
+    }
+
+    /**
+     * 上报 Vue 工程这次的生成 + 构建结果。
+     *
+     * <p>放在 {@code finally} 里：无论是自愈成功、自愈失败还是流程本身抛异常，
+     * 都要留下一条记录 —— 异常路径恰恰是最需要被统计的那些样本。</p>
+     */
+    private void recordBuildOutcome(Long appId, String projectPath, long generateCostMs,
+                                    HealingOutcome outcome, String unexpectedError) {
+        long buildCostMs = outcome == null ? 0L : outcome.getBuildCostMs();
+
+        GenerationMetric metric = GenerationMetric.builder()
+                .appId(appId)
+                .codeGenType(CodeGenTypeEnum.VUE_PROJECT.getValue())
+                .firstBuildPassed(outcome != null && outcome.isFirstBuildPassed())
+                .finalPassed(outcome != null && outcome.isFinalPassed())
+                .healingAttempts(outcome == null ? 0 : outcome.getHealingAttempts())
+                .generateCostMs(generateCostMs)
+                .buildCostMs(buildCostMs)
+                .totalCostMs(generateCostMs + buildCostMs)
+                .build();
+
+        if (outcome != null && !outcome.isFinalPassed()) {
+            BuildResult result = outcome.getBuildResult();
+            metric.withFailure(
+                    result == null ? BuildFailureTypeEnum.EXECUTION_ERROR : result.getFailureType(),
+                    result == null ? null : result.getErrorMessage());
+        } else if (outcome == null) {
+            metric.withFailure(BuildFailureTypeEnum.EXECUTION_ERROR, unexpectedError);
+        } else {
+            metric.withOutput(projectPath);
+        }
+        recordQuietly(metric);
     }
 
     /**
