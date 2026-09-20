@@ -12,7 +12,8 @@ import com.quan.aicodehelper.ai.config.RoutingAiModelConfig;
 import com.quan.aicodehelper.ai.service.AiCodeGenTypeRoutingService;
 import com.quan.aicodehelper.constant.AppConstant;
 import com.quan.aicodehelper.config.StorageProperties;
-import com.quan.aicodehelper.core.builder.VueProjectBuilder;
+import com.quan.aicodehelper.core.builder.BuildResult;
+import com.quan.aicodehelper.core.healing.BuildSelfHealingService;
 import com.quan.aicodehelper.exception.BusinessException;
 import com.quan.aicodehelper.exception.ErrorCode;
 import com.quan.aicodehelper.exception.ThrowUtils;
@@ -62,7 +63,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     private ChatHistoryService chatHistoryService;
 
     @Resource
-    private VueProjectBuilder vueProjectBuilder;
+    private BuildSelfHealingService buildSelfHealingService;
 
     @Resource
     private ScreenshotServiceImpl screenshotServiceImpl;
@@ -225,8 +226,11 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         boolean isVueProject = CodeGenTypeEnum.VUE_PROJECT.getValue().equals(codeGenType);
         if (isVueProject)
         {
-            boolean buildSuccess = vueProjectBuilder.buildProject(sourceDirPath);
-            ThrowUtils.throwIf(!buildSuccess, ErrorCode.SYSTEM_ERROR,"Vue项目构建失败，请检查构建日志");
+            // 走带自愈的构建：部署是用户主动触发且要等结果的场景，
+            // 构建失败时先让 AI 尝试修复，比直接抛「构建失败」更有价值。
+            BuildResult buildResult = buildSelfHealingService.buildWithHealing(sourceDirPath, appId);
+            ThrowUtils.throwIf(!buildResult.isSuccess(), ErrorCode.SYSTEM_ERROR,
+                    "Vue 项目构建失败：" + StrUtil.blankToDefault(buildResult.getErrorMessage(), "请检查构建日志"));
         }
         String deployDirPath = AppConstant.getCodeDeployRootDir() + File.separator + deployKey;
         try{
