@@ -10,6 +10,14 @@ app:
     code-deploy-dir: ${APP_STORAGE_CODE_DEPLOY_DIR:target/test-tmp/code_deploy}
     deploy-host: ${APP_STORAGE_DEPLOY_HOST:http://localhost:8080/api/static/}
 
+  # SSE 生成流：测试里把缓冲调小、保留期缩短，便于用少量事件把
+  # 「环形淘汰」「过期回收」两条边界跑出来，不必构造几百条事件
+  sse:
+    buffer-size: 5
+    task-retention-ms: 2000
+    heartbeat-interval-ms: 1000
+    generation-timeout-minutes: 1
+
 spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver

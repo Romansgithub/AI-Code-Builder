@@ -12,8 +12,11 @@ import com.quan.aicodehelper.ai.config.RoutingAiModelConfig;
 import com.quan.aicodehelper.ai.service.AiCodeGenTypeRoutingService;
 import com.quan.aicodehelper.constant.AppConstant;
 import com.quan.aicodehelper.config.StorageProperties;
+import com.quan.aicodehelper.ai.tools.GenerationProgressRegistry;
 import com.quan.aicodehelper.core.builder.BuildResult;
 import com.quan.aicodehelper.core.healing.BuildSelfHealingService;
+import com.quan.aicodehelper.core.stream.GenerationTask;
+import com.quan.aicodehelper.core.stream.GenerationTaskExecutor;
 import com.quan.aicodehelper.exception.BusinessException;
 import com.quan.aicodehelper.exception.ErrorCode;
 import com.quan.aicodehelper.exception.ThrowUtils;
@@ -55,6 +58,19 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     @Resource
     private AiCodeGeneratorFacade aiCodeGeneratorFactory;
+
+    /**
+     * 任务现场登记处。生成任务的「唯一性」由它保证 —— 见
+     * {@link #startGeneration}。
+     */
+    @Resource
+    private GenerationProgressRegistry generationProgressRegistry;
+
+    /**
+     * 任务执行器：把生成搬到独立虚拟线程，断开与 HTTP 连接的生命周期绑定。
+     */
+    @Resource
+    private GenerationTaskExecutor generationTaskExecutor;
 
     @Resource
     private UserService userService;
@@ -113,7 +129,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      */
 
     @Override
-    public Flux<String> chatToGenCode(Long appId, String message, User loginUser) {
+    public GenerationTask startGeneration(Long appId, String message, User loginUser) {
 
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不能为空");
         ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "消息不能为空");
@@ -131,16 +147,35 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "无效的代码生成类型");
         }
 
+        // 抢占任务现场。这一步是「重复生成」的唯一防线：
+        // 浏览器自动重连、用户连点、前端重试同时打进来时，只有一个请求能拿到任务，
+        // 其余请求拿到 null 后转为「订阅已有任务」，不会重复烧 token、重复写文件。
+        GenerationTask task = generationProgressRegistry.startTask(appId);
+        if (task == null) {
+            GenerationTask running = generationProgressRegistry.getTask(appId);
+            // 正在跑：不报错，交回既有任务让调用方去订阅 —— 这正是「重连」的语义。
+            if (running != null && running.isRunning()) {
+                log.info("应用 {} 已有进行中的生成任务，本次请求转为订阅", appId);
+                return running;
+            }
+            // 抢占失败但不是运行中，说明恰好被并发请求抢先；同样交回现场
+            ThrowUtils.throwIf(running == null, ErrorCode.SYSTEM_ERROR, "生成任务启动失败，请重试");
+            return running;
+        }
+
+        // 用户消息先落库：它代表用户的真实输入，与生成成功与否无关。
+        // 这样即便生成失败，刷新页面后仍能看到自己发过什么。
         chatHistoryService.addChatMessage(appId, message, ChatHistoryMessageTypeEnum.USER.getValue(), loginUser.getId());
+
         Flux<String> contentFlux = aiCodeGeneratorFactory.generateCodeStream(message, codeGenTypeEnum, appId);
         StringBuilder aiResponseBuilder = new StringBuilder();
 
-        return contentFlux
+        Flux<String> tracked = contentFlux
                 .map(chunk -> {
                     aiResponseBuilder.append(chunk);
                     return chunk;
                 })
-                // 说明：以下回调运行在响应式线程中，异步于本方法的调用栈，
+                // 以下回调运行在响应式线程中，异步于本次调用的调用栈，
                 // 因此不能用 @Transactional 包住整个方法 —— 事务会在流完成前就提交。
                 // 这里每次落库都是独立的单条 insert，本身即原子操作，无需外层事务。
                 .doOnComplete(() -> {
@@ -155,6 +190,22 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     // 且该消息会被回填进模型记忆，污染后续对话上下文。
                     log.error("应用 {} 生成代码失败：{}", appId, error.getMessage(), error);
                 });
+
+        // 关键一步：生成被放到独立虚拟线程里跑到头，与 HTTP 连接彻底解耦。
+        // 用户此刻断线不会中断生成，稍后重连还能从事件缓冲里补齐错过的进度。
+        generationTaskExecutor.start(task, tracked);
+        return task;
+    }
+
+    @Override
+    public void checkAppPermission(Long appId, User loginUser) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不能为空");
+        ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR, "用户未登录");
+        App app = this.getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+        if (!app.getUserId().equals(loginUser.getId())) {
+            throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权访问该应用");
+        }
     }
 
     /**

@@ -12,6 +12,7 @@ import com.quan.aicodehelper.common.DeleteRequest;
 import com.quan.aicodehelper.common.ResultUtils;
 import com.quan.aicodehelper.constant.AppConstant;
 import com.quan.aicodehelper.constant.UserConstant;
+import com.quan.aicodehelper.core.stream.GenerationTask;
 import com.quan.aicodehelper.exception.BusinessException;
 import com.quan.aicodehelper.exception.ErrorCode;
 import com.quan.aicodehelper.exception.ThrowUtils;
@@ -20,6 +21,8 @@ import com.quan.aicodehelper.model.entity.App;
 import com.quan.aicodehelper.model.entity.User;
 import com.quan.aicodehelper.model.enums.CodeGenTypeEnum;
 import com.quan.aicodehelper.model.vo.AppVO;
+import com.quan.aicodehelper.model.vo.GenerateCodeStatusVO;
+import com.quan.aicodehelper.model.vo.GenerateCodeVO;
 import com.quan.aicodehelper.service.AppService;
 import com.quan.aicodehelper.service.ProjectDownloadService;
 import com.quan.aicodehelper.service.UserService;
@@ -32,11 +35,8 @@ import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import org.springframework.http.codec.ServerSentEvent;
-import reactor.core.publisher.Mono;
-import reactor.core.publisher.Sinks;
 
 import java.io.File;
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -277,47 +277,103 @@ public class AppController {
     }
 
     /**
-     * 聊天生成代码(流式)
-     * @param appId
-     * @param message
-     * @param request
-     * @return
+     * 发起代码生成（写操作）。
+     *
+     * <p><b>为什么从 GET 改成 POST</b>：这个端点会真实触发代码生成 ——
+     * 写对话记录、消耗模型 token、落盘文件、可能跑 npm 构建。
+     * 把它放在 GET 上，等于允许「浏览器自动重放的请求」去做写操作：
+     * 网络一抖，EventSource 就会带着同一个 URL 自动重连，
+     * 服务端老老实实再生成一遍。这是重复生成事故的直接来源。</p>
+     *
+     * <p>POST 之后浏览器不会自动重放（fetch 不会自动重试非幂等请求），
+     * 且消息体可以放在 body 里，不再受 URL 长度限制。</p>
+     *
+     * <p><b>响应是普通 JSON 而不是流</b>：本端点只负责「把任务启动起来」并立刻返回。
+     * 进度与内容由 {@code /chat/gen/stream} 独立订阅，
+     * 这样连接断开不会波及生成，重连也不会重新启动生成。</p>
      */
-    @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId, @RequestParam String message, HttpServletRequest request){
+    @PostMapping("/chat/gen/code")
+    public BaseResponse<GenerateCodeVO> generateCode(@RequestBody GenerateCodeRequest generateCodeRequest,
+                                                    HttpServletRequest request) {
+        ThrowUtils.throwIf(generateCodeRequest == null, ErrorCode.PARAMS_ERROR);
+        Long appId = generateCodeRequest.getAppId();
+        String message = generateCodeRequest.getMessage();
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
         ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "消息不能为空");
+
+        // 记下请求进来的时刻：service 返回的任务若创建时间早于它，
+        // 说明本次请求没有真正启动生成，而是复用了本来就存在的任务
+        long requestStartedAt = System.currentTimeMillis();
+
+        // 权限校验与任务抢占都在 service 层：已有进行中任务时不报错，而是交回既有任务，
+        // 这正是「重连不重启生成」的落点。
+        User loginUser = userService.getLoginUser(request);
+        GenerationTask task = appService.startGeneration(appId, message, loginUser);
+        GenerateCodeVO vo = GenerateCodeVO.of(appId, task);
+        // 复用已有任务时明确告知前端：它接的是「刚才那次生成」，不是新起了一次
+        vo.setReused(!task.isRunning() || task.getCreatedAt() < requestStartedAt);
+        return ResultUtils.success(vo);
+    }
+
+    /**
+     * 订阅代码生成进度（读操作，可安全重放）。
+     *
+     * <p>与触发端点的分工是这次改造的核心：读接口重复执行只是「多听一遍」，
+     * 写接口重复执行才是事故。拆开之后，即便代理、浏览器或用户手工重试这个 GET，
+     * 代价也仅仅是多一条订阅连接。</p>
+     *
+     * <p><b>断点续传</b>：前端通过 {@code Last-Event-ID} 头（或 query 参数）告知
+     * 自己最后收到的事件序号，服务端从事件缓冲里补齐错过的部分再接着推。
+     * 用请求头而非 query 是遵循 SSE 规范 —— 浏览器原生重连会自动带上这个头。</p>
+     */
+    @GetMapping(value = "/chat/gen/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> subscribeGenStream(@RequestParam Long appId,
+                                                           @RequestParam(required = false) Long lastEventId,
+                                                           HttpServletRequest request) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
         try {
             User loginUser = userService.getLoginUser(request);
-            Sinks.Many<ServerSentEvent<String>> progressSink = generationProgressRegistry.register(appId);
-            Flux<ServerSentEvent<String>> contentEvents = appService.chatToGenCode(appId, message, loginUser)
-                    .map(chunk -> ServerSentEvent.<String>builder()
-                            .data(JSONUtil.toJsonStr(Map.of("d", chunk))).build())
-                    .doOnComplete(() -> generationProgressRegistry.complete(appId))
-                    .doOnError((e) -> generationProgressRegistry.complete(appId));
-
-            return Flux.merge(contentEvents, progressSink.asFlux())
-                    .timeout(Duration.ofMinutes(15), Mono.error(
-                            new BusinessException(ErrorCode.SYSTEM_ERROR,"生成代码超时")
-                    ))
-                    .concatWith(Mono.just(ServerSentEvent.<String>builder().event("done").data("").build()))
-                    .onErrorResume(e ->{
-                        log.error("AI 代码生成流处理异常", e);
-                        return Flux.just(ServerSentEvent.<String>builder()
-                                .event("error")
-                                .data(JSONUtil.toJsonStr(Map.of("error", e.getMessage())))
-                                .build());
-                    })
-                    .doFinally(sig -> generationProgressRegistry.complete(appId));
-
+            appService.checkAppPermission(appId, loginUser);
         } catch (BusinessException e) {
-            log.error("AI 代码生成请求被拒绝: {}", e.getMessage());
-            String errorData = JSONUtil.toJsonStr(Map.of("error", e.getMessage()));
+            log.warn("订阅生成进度被拒绝：{}", e.getMessage());
             return Flux.just(ServerSentEvent.<String>builder()
-                    .event("error")
-                    .data(errorData)
+                    .event("business-error")
+                    .data(JSONUtil.toJsonStr(Map.of("message", e.getMessage())))
                     .build());
         }
+
+        long resumeFrom = resolveLastEventId(request, lastEventId);
+        return generationProgressRegistry.subscribe(appId, resumeFrom);
+    }
+
+    /**
+     * 查询生成任务状态（供刷新页面后恢复现场）。
+     */
+    @GetMapping("/chat/gen/status")
+    public BaseResponse<GenerateCodeStatusVO> getGenStatus(@RequestParam Long appId, HttpServletRequest request) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
+        User loginUser = userService.getLoginUser(request);
+        appService.checkAppPermission(appId, loginUser);
+        return ResultUtils.success(GenerateCodeStatusVO.of(appId, generationProgressRegistry.getTask(appId)));
+    }
+
+    /**
+     * 解析续传起点。
+     *
+     * <p>优先取 {@code Last-Event-ID} 请求头：这是 SSE 规范定义的字段，
+     * 浏览器原生重连会自动携带，遵循它意味着将来换回原生 EventSource 也能续传。
+     * query 参数只作为显式指定的补充。</p>
+     */
+    private long resolveLastEventId(HttpServletRequest request, Long queryValue) {
+        String header = request.getHeader("Last-Event-ID");
+        if (StrUtil.isNotBlank(header)) {
+            try {
+                return Long.parseLong(header.trim());
+            } catch (NumberFormatException ignored) {
+                log.warn("非法的 Last-Event-ID 请求头：{}", header);
+            }
+        }
+        return queryValue == null || queryValue < 0 ? 0L : queryValue;
     }
 
     /**
