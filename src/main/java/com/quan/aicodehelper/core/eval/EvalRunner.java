@@ -2,6 +2,7 @@ package com.quan.aicodehelper.core.eval;
 
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.IdUtil;
+import cn.hutool.core.util.StrUtil;
 import com.quan.aicodehelper.ai.facade.AiCodeGeneratorFacade;
 import com.quan.aicodehelper.config.EvalProperties;
 import com.quan.aicodehelper.constant.AppConstant;
@@ -299,11 +300,28 @@ public class EvalRunner {
         if (fi == null) {
             return FaultInjectionOutcome.notConfigured();
         }
-        File target = new File(outputDir, fi.getFile());
-        if (!target.isFile()) {
-            return FaultInjectionOutcome.failed(
-                    "目标文件不存在：" + target.getAbsolutePath());
+
+        File target;
+        if (StrUtil.isNotBlank(fi.getFile())) {
+            target = new File(outputDir, fi.getFile());
+            if (!target.isFile()) {
+                return FaultInjectionOutcome.failed(
+                        "目标文件不存在：" + target.getAbsolutePath());
+            }
+        } else {
+            // 未指定文件时自动定位。这是**推荐用法**，因为模型把组件 import 写在哪个
+            // 文件里并不稳定：同一条 prompt 历次跑批可能落在 App.vue、pages/Home.vue、
+            // pages/HomePage.vue。写死任一个都会在模型换一种组织方式时失效，
+            // 而失效的表现是一条「首轮就通过」的漂亮假数据（若静默跳过的话）。
+            target = locateInjectableFile(outputDir, fi.getFind());
+            if (target == null) {
+                return FaultInjectionOutcome.failed(String.format(
+                        "未在 %s 的 src 目录下任何 .vue/.js 文件中找到待替换内容「%s」，"
+                                + "可能是模型输出的导入写法变了，请调整 find 串。该目录下的文件：%s",
+                        outputDir, fi.getFind(), listSourceFiles(outputDir)));
+            }
         }
+
         String content;
         try {
             content = FileUtil.readString(target, java.nio.charset.StandardCharsets.UTF_8);
@@ -315,7 +333,7 @@ public class EvalRunner {
             // 一旦命中失败必须让人立刻知道并去修 find 串，而不是继续产出假数据。
             return FaultInjectionOutcome.failed(String.format(
                     "在 %s 中未找到待替换内容「%s」，可能是模型输出的导入写法变了，请调整 find 串",
-                    fi.getFile(), fi.getFind()));
+                    target.getName(), fi.getFind()));
         }
         String broken = content.replace(fi.getFind(), fi.getReplace());
         try {
@@ -324,8 +342,68 @@ public class EvalRunner {
             return FaultInjectionOutcome.failed("写回目标文件失败：" + e.getMessage());
         }
         log.info("用例 {} 已注入故障：{} 中「{}」→「{}」",
-                evalCase.getId(), fi.getFile(), fi.getFind(), fi.getReplace());
+                evalCase.getId(), target.getName(), fi.getFind(), fi.getReplace());
         return FaultInjectionOutcome.injected();
+    }
+
+    /**
+     * 在产物的 src 目录下找出第一个包含 {@code find} 的源文件。
+     *
+     * <p>扫描范围限定在 {@code src} 下、只认 {@code .vue} 与 {@code .js}：
+     * 产物的 {@code node_modules} 体量很大，全目录遍历既慢又可能命中第三方包里的
+     * 同名片段 —— 那样注入的是依赖而不是模型写的代码，构建失败的原因就跑偏了。</p>
+     *
+     * <p>返回 {@code null} 表示没找到，由调用方报错。这里刻意不做「就近取一个文件」
+     * 之类的兜底：注入到不含目标串的文件上等于什么都没做，而那样又会退化成
+     * 「首轮直接通过」的假数据。</p>
+     */
+    private File locateInjectableFile(String outputDir, String find) {
+        File srcDir = new File(outputDir, "src");
+        if (!srcDir.isDirectory()) {
+            return null;
+        }
+        for (File f : FileUtil.loopFiles(srcDir)) {
+            if (!f.isFile()) {
+                continue;
+            }
+            String name = f.getName().toLowerCase();
+            if (!name.endsWith(".vue") && !name.endsWith(".js")) {
+                continue;
+            }
+            try {
+                if (FileUtil.readString(f, java.nio.charset.StandardCharsets.UTF_8).contains(find)) {
+                    return f;
+                }
+            } catch (Exception e) {
+                // 单个文件读失败不该让整次定位作废，跳过继续找
+                log.debug("读取 {} 失败，跳过：{}", f.getAbsolutePath(), e.getMessage());
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 列出 src 下的源文件，用于注入失败时把「实际有哪些文件」写进错误信息。
+     *
+     * <p>否则拿到「找不到 xxx」只能靠翻磁盘猜，下一轮照样要再跑一次二十分钟的跑批
+     * 才能定位 —— 一次跑批的成本远高于多打这一行日志。</p>
+     */
+    private String listSourceFiles(String outputDir) {
+        File srcDir = new File(outputDir, "src");
+        if (!srcDir.isDirectory()) {
+            return "（src 目录不存在）";
+        }
+        List<String> names = new ArrayList<>();
+        for (File f : FileUtil.loopFiles(srcDir)) {
+            if (!f.isFile()) {
+                continue;
+            }
+            String name = f.getName().toLowerCase();
+            if (name.endsWith(".vue") || name.endsWith(".js")) {
+                names.add(srcDir.toPath().relativize(f.toPath()).toString().replace('\\', '/'));
+            }
+        }
+        return names.isEmpty() ? "（无 .vue/.js 文件）" : String.join(", ", names);
     }
 
     /**

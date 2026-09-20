@@ -113,10 +113,16 @@ public class EvalSetLoader {
     /**
      * 解析故障注入配置。
      *
-     * <p>没有 {@code faultInjection} 节点时返回 null（正常用例不注入），
-     * 但一旦写了这个节点，三个字段就都必须完整 —— 半填的注入配置是配置错误，
-     * 而不是「没有注入」。若在这里宽容处理成 null，跑批会静默跳过注入，
-     * 得到的「首轮就通过」是假数据，比直接报错危险得多。</p>
+     * <p>没有 {@code faultInjection} 节点时返回 null（正常用例不注入）。
+     * 一旦写了这个节点，{@code find} 与 {@code replace} 必须完整 ——
+     * 少了它们注入无从谈起，是配置错误而不是「没有注入」。
+     * 若在这里宽容处理成 null，跑批会静默跳过注入，得到的「首轮就通过」
+     * 是假数据，比直接报错危险得多。</p>
+     *
+     * <p>{@code file} <b>可以留空</b>：留空表示在产物 {@code src} 目录下自动定位
+     * 第一个含 {@code find} 的源文件。这是更稳的用法，因为模型把组件 import
+     * 写在哪个文件里并不稳定（同一条 prompt 可能落在 {@code App.vue} 或
+     * {@code pages/Home.vue}），写死文件会在模型换一种组织方式时失效。</p>
      */
     private EvalCase.FaultInjection resolveFaultInjection(JSONObject node, int index) {
         JSONObject fi = node.getJSONObject("faultInjection");
@@ -131,10 +137,8 @@ public class EvalSetLoader {
         injection.setReplace(readText(fi, "replace"));
         // 逐字段判空而不是塞进 Map.entry —— entry 不接受 null，而「字段没填」
         // 恰恰就是 null，用 Map 组装会在判空之前先炸，缺失检查等于没写。
+        // 注意 file 不在此列：它可留空（留空 = 自动定位）。
         List<String> missing = new java.util.ArrayList<>();
-        if (StrUtil.isBlank(injection.getFile())) {
-            missing.add("file");
-        }
         if (StrUtil.isBlank(injection.getFind())) {
             missing.add("find");
         }
@@ -241,21 +245,25 @@ public class EvalSetLoader {
      * <p>注入是按「项目根 + 相对路径」去改文件的，路径一旦能逃出项目根
      * （{@code ../} 或绝对路径），评测就不再是「破坏被测产物」而变成
      * 「随机改磁盘上的文件」了。这种错必须在校验期拦下，不能等跑批时才炸。</p>
+     *
+     * <p>{@code file} 留空是合法的（表示自动定位），此时不校验路径。</p>
      */
     private void validateFaultInjection(EvalCase c) {
         EvalCase.FaultInjection fi = c.getFaultInjection();
         if (fi == null) {
             return;
         }
-        String file = fi.getFile().trim().replace('\\', '/');
-        if (file.startsWith("/") || file.matches("^[A-Za-z]:.*")) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
-                    "用例「" + c.getId() + "」的 faultInjection.file 必须是相对路径：" + fi.getFile());
-        }
-        java.nio.file.Path normalized = java.nio.file.Paths.get(file).normalize();
-        if (normalized.startsWith("..")) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
-                    "用例「" + c.getId() + "」的 faultInjection.file 不允许跳出项目目录：" + fi.getFile());
+        if (StrUtil.isNotBlank(fi.getFile())) {
+            String file = fi.getFile().trim().replace('\\', '/');
+            if (file.startsWith("/") || file.matches("^[A-Za-z]:.*")) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                        "用例「" + c.getId() + "」的 faultInjection.file 必须是相对路径：" + fi.getFile());
+            }
+            java.nio.file.Path normalized = java.nio.file.Paths.get(file).normalize();
+            if (normalized.startsWith("..")) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                        "用例「" + c.getId() + "」的 faultInjection.file 不允许跳出项目目录：" + fi.getFile());
+            }
         }
         if (fi.getFind().equals(fi.getReplace())) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR,

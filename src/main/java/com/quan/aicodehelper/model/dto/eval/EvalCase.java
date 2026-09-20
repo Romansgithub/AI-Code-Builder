@@ -57,14 +57,20 @@ public class EvalCase {
     /**
      * 故障注入描述。
      *
-     * <p>只支持「相对文件路径 + 查找串 + 替换串」这种最小形式 —— 足够表达
+     * <p>只支持「查找串 + 替换串」（可选限定文件）这种最小形式 —— 足够表达
      * 「把 import 路径改错」这类典型可自愈故障，又不至于让评测集变成脚本引擎。</p>
      */
     @Data
     public static class FaultInjection {
 
         /**
-         * 要破坏的文件，相对项目根目录。
+         * 要破坏的文件，相对项目根目录。<b>可留空</b>。
+         *
+         * <p>留空时会在产物 {@code src} 目录下自动找到第一个含 {@code find} 的
+         * {@code .vue}/{@code .js} 文件，这通常是更稳的用法 —— 模型把组件 import
+         * 写在哪个文件里并不稳定：同一条 prompt 历次跑批可能落在 {@code App.vue}、
+         * {@code pages/Home.vue}、{@code pages/HomePage.vue}。
+         * 写死任一个都会在模型换一种组织方式时失效。</p>
          */
         private String file;
 

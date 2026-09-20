@@ -243,23 +243,45 @@ class EvalSetLoaderTest {
     class FaultInjectionParsing {
 
         @Test
-        @DisplayName("内置评测集里应有一条用例配了故障注入 —— 否则自愈链路永远没被验证过")
-        void builtinSetShouldContainInjectionCase() {
+        @DisplayName("内置评测集的注入串必须真的出现过的写法 —— 否则注入永远不会命中")
+        void builtinInjectionFindShouldMatchRealModelOutput() {
             EvalSet evalSet = loader.load();
 
             List<EvalCase> withInjection = evalSet.getCases().stream()
                     .filter(c -> c.getFaultInjection() != null)
                     .toList();
-            assertThat(withInjection)
-                    .as("没有注入用例时，报告里的自愈成功率永远是「本次无用例触发自愈」")
-                    .isNotEmpty();
+            assertThat(withInjection).isNotEmpty();
+
             for (EvalCase c : withInjection) {
-                assertThat(c.getCodeGenType())
-                        .as("自愈只对 Vue 工程生效，注入用例必须是 VUE_PROJECT")
-                        .isEqualTo(CodeGenTypeEnum.VUE_PROJECT);
-                assertThat(c.getFaultInjection().getFind())
-                        .as("替换前后相同起不到注入效果")
-                        .isNotEqualTo(c.getFaultInjection().getReplace());
+                EvalCase.FaultInjection fi = c.getFaultInjection();
+                // 这里钉死「模型写的是别名导入」这个实测事实。历史上 find 串曾写成
+                // from './components/（相对路径），而模型实际一律写 @/components/
+                // （13/13），命中率 0% —— 注入从未生效，整条自愈链路等于没验证过。
+                assertThat(fi.getFind())
+                        .as("模型实测一律使用 @ 别名导入；写成相对路径会 100% 不命中")
+                        .contains("@/components/");
+                assertThat(fi.getReplace())
+                        .as("替换目标必须是不存在的目录，否则构建仍然通过、注入失去意义")
+                        .isNotEqualTo(fi.getFind())
+                        .contains("components-broken");
+            }
+        }
+
+        @Test
+        @DisplayName("内置评测集的注入用例应留空 file —— 模型把 import 写在哪个文件并不固定")
+        void builtinInjectionShouldNotPinFile() {
+            EvalSet evalSet = loader.load();
+
+            List<EvalCase> withInjection = evalSet.getCases().stream()
+                    .filter(c -> c.getFaultInjection() != null)
+                    .toList();
+            assertThat(withInjection).isNotEmpty();
+
+            for (EvalCase c : withInjection) {
+                assertThat(c.getFaultInjection().getFile())
+                        .as("历次跑批目标是 App.vue / pages/Home.vue / pages/HomePage.vue 不等，"
+                                + "写死任一个都会在模型换一种组织方式时失效")
+                        .isNullOrEmpty();
             }
         }
 
@@ -277,14 +299,31 @@ class EvalSetLoaderTest {
         }
 
         @Test
+        @DisplayName("file 留空是合法的，表示自动定位")
+        void shouldAllowBlankFile() {
+            String json = """
+                    {"name":"t","version":"1.0","cases":[
+                      {"id":"a","description":"d","codeGenType":"vue_project","prompt":"p",
+                       "faultInjection":{"find":"'@/components/","replace":"'@/components-broken/"}}]}
+                    """;
+
+            EvalSet set = parseWith(json);
+
+            EvalCase.FaultInjection fi = set.getCases().get(0).getFaultInjection();
+            assertThat(fi).isNotNull();
+            assertThat(fi.getFile()).isNull();
+            assertThat(fi.getFind()).isEqualTo("'@/components/");
+        }
+
+        @Test
         @DisplayName("完整配置应逐字段解析出来")
         void shouldParseCompleteConfig() {
             String json = """
                     {"name":"t","version":"1.0","cases":[
                       {"id":"a","description":"d","codeGenType":"vue_project","prompt":"p",
                        "faultInjection":{"file":"src/App.vue",
-                                         "find":"from './components/",
-                                         "replace":"from './components-broken/"}}]}
+                                         "find":"'@/components/",
+                                         "replace":"'@/components-broken/"}}]}
                     """;
 
             EvalSet set = parseWith(json);
@@ -292,12 +331,12 @@ class EvalSetLoaderTest {
             EvalCase.FaultInjection fi = set.getCases().get(0).getFaultInjection();
             assertThat(fi).isNotNull();
             assertThat(fi.getFile()).isEqualTo("src/App.vue");
-            assertThat(fi.getFind()).isEqualTo("from './components/");
-            assertThat(fi.getReplace()).isEqualTo("from './components-broken/");
+            assertThat(fi.getFind()).isEqualTo("'@/components/");
+            assertThat(fi.getReplace()).isEqualTo("'@/components-broken/");
         }
 
         @Test
-        @DisplayName("三个字段缺任何一个都应报错，不能宽容成「无注入」")
+        @DisplayName("find / replace 缺任何一个都应报错，不能宽容成「无注入」")
         void shouldRejectIncompleteConfig() {
             String json = """
                     {"name":"t","version":"1.0","cases":[

@@ -290,7 +290,7 @@ class EvalOutputPathContractTest {
                                 + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
                         FileUtil.mkdir(dir + File.separator + "src");
                         FileUtil.writeString(
-                                "<script setup>\nimport Hello from './components/Hello.vue'\n</script>\n",
+                                "<script setup>\nimport Hello from '@/components/Hello.vue'\n</script>\n",
                                 dir + File.separator + "src" + File.separator + "App.vue", "utf-8");
                         return Flux.just("done");
                     });
@@ -300,8 +300,8 @@ class EvalOutputPathContractTest {
             EvalCase c = caseOf("vue-healing-trigger", CodeGenTypeEnum.VUE_PROJECT);
             EvalCase.FaultInjection fi = new EvalCase.FaultInjection();
             fi.setFile("src/App.vue");
-            fi.setFind("from './components/");
-            fi.setReplace("from './components-broken/");
+            fi.setFind("'@/components/");
+            fi.setReplace("'@/components-broken/");
             c.setFaultInjection(fi);
             return c;
         }
@@ -337,8 +337,8 @@ class EvalOutputPathContractTest {
             assertThat(builtWithHealing.get()).isEqualTo(1);
             assertThat(appVueAtBuildTime.get())
                     .as("构建时读到的应该已是破坏后的内容 —— 否则首轮不会失败，自愈也就没被验证")
-                    .contains("./components-broken/")
-                    .doesNotContain("./components/");
+                    .contains("@/components-broken/")
+                    .doesNotContain("@/components/");
             assertThat(cr.isFirstBuildPassed())
                     .as("注入的目的就是让首轮必然失败")
                     .isFalse();
@@ -429,6 +429,146 @@ class EvalOutputPathContractTest {
             assertThat(cr.isFirstBuildPassed()).isTrue();
             assertThat(cr.isFinalPassed()).isTrue();
             assertThat(cr.getHealingAttempts()).isZero();
+        }
+
+        @Test
+        @DisplayName("file 留空时应自动定位到含目标串的文件 —— 哪怕它不在 App.vue")
+        void shouldAutoLocateFileWhenBlank() {
+            // 复刻实跑时的情况：组件 import 写在 pages/Home.vue，App.vue 里只有路由出口。
+            // 写死 src/App.vue 的配置在这种工程上会 100% 注入失败。
+            when(facade.generateCodeStream(anyString(), any(), anyLong()))
+                    .thenAnswer(inv -> {
+                        Long appId = inv.getArgument(2);
+                        String dir = AppConstant.getCodeOutputRootDir() + File.separator
+                                + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
+                        FileUtil.mkdir(dir + File.separator + "src" + File.separator + "pages");
+                        FileUtil.writeString(
+                                "<script setup>\nimport { RouterView } from 'vue-router'\n</script>\n",
+                                dir + File.separator + "src" + File.separator + "App.vue", "utf-8");
+                        FileUtil.writeString(
+                                "<script setup>\nimport FilterBar from '@/components/FilterBar.vue'\n"
+                                        + "import InventoryList from '@/components/InventoryList.vue'\n</script>\n",
+                                dir + File.separator + "src" + File.separator + "pages"
+                                        + File.separator + "Home.vue", "utf-8");
+                        return Flux.just("done");
+                    });
+
+            java.util.concurrent.atomic.AtomicReference<String> homeAtBuildTime =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<String> appAtBuildTime =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            com.quan.aicodehelper.core.healing.BuildSelfHealingService healing =
+                    mock(com.quan.aicodehelper.core.healing.BuildSelfHealingService.class);
+            when(healing.buildWithHealingOutcome(anyString(), anyLong()))
+                    .thenAnswer(inv -> {
+                        String dir = inv.getArgument(0);
+                        homeAtBuildTime.set(FileUtil.readString(
+                                new File(dir, "src" + File.separator + "pages" + File.separator + "Home.vue"),
+                                java.nio.charset.StandardCharsets.UTF_8));
+                        appAtBuildTime.set(FileUtil.readString(
+                                new File(dir, "src" + File.separator + "App.vue"),
+                                java.nio.charset.StandardCharsets.UTF_8));
+                        return com.quan.aicodehelper.core.healing.HealingOutcome.of(
+                                com.quan.aicodehelper.core.builder.BuildResult.ok("ok"), false, 1, 1L);
+                    });
+            ReflectionTestUtils.setField(runner, "buildSelfHealingService", healing);
+
+            EvalCase c = caseOf("vue-healing-trigger", CodeGenTypeEnum.VUE_PROJECT);
+            EvalCase.FaultInjection fi = new EvalCase.FaultInjection();
+            // 刻意不设 file
+            fi.setFind("'@/components/");
+            fi.setReplace("'@/components-broken/");
+            c.setFaultInjection(fi);
+            when(loader.load()).thenReturn(singleCaseSet(c));
+
+            EvalRunResult.CaseResult cr = runner.run().getCases().get(0);
+
+            assertThat(homeAtBuildTime.get())
+                    .as("注入必须落在真正含目标串的那个文件上")
+                    .contains("@/components-broken/")
+                    .doesNotContain("@/components/");
+            assertThat(appAtBuildTime.get())
+                    .as("不含目标串的文件不该被动过")
+                    .doesNotContain("components-broken");
+            assertThat(cr.isFirstBuildPassed()).isFalse();
+            assertThat(cr.getHealingAttempts()).isEqualTo(1);
+            assertThat(cr.isFinalPassed()).isTrue();
+        }
+
+        @Test
+        @DisplayName("自动定位失败时报错要列出实际有哪些源文件，省得下一轮再翻磁盘")
+        void shouldListFilesWhenAutoLocateFails() {
+            when(facade.generateCodeStream(anyString(), any(), anyLong()))
+                    .thenAnswer(inv -> {
+                        Long appId = inv.getArgument(2);
+                        String dir = AppConstant.getCodeOutputRootDir() + File.separator
+                                + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
+                        FileUtil.mkdir(dir + File.separator + "src");
+                        FileUtil.writeString("<script setup>// 什么导入都没有</script>\n",
+                                dir + File.separator + "src" + File.separator + "App.vue", "utf-8");
+                        return Flux.just("done");
+                    });
+
+            ReflectionTestUtils.setField(runner, "buildSelfHealingService",
+                    mock(com.quan.aicodehelper.core.healing.BuildSelfHealingService.class));
+
+            EvalCase c = caseOf("vue-healing-trigger", CodeGenTypeEnum.VUE_PROJECT);
+            EvalCase.FaultInjection fi = new EvalCase.FaultInjection();
+            fi.setFind("'@/components/");
+            fi.setReplace("'@/components-broken/");
+            c.setFaultInjection(fi);
+            when(loader.load()).thenReturn(singleCaseSet(c));
+
+            EvalRunResult.CaseResult cr = runner.run().getCases().get(0);
+
+            assertThat(cr.isFinalPassed()).isFalse();
+            assertThat(cr.getFailureMessage())
+                    .contains("故障注入失败")
+                    .contains("未在")
+                    .as("带上实际文件列表，才能一次跑批就定位到该改什么")
+                    .contains("App.vue");
+        }
+
+        @Test
+        @DisplayName("自动定位不能扫到 node_modules：那是依赖不是模型写的代码")
+        void shouldNotInjectIntoNodeModules() {
+            when(facade.generateCodeStream(anyString(), any(), anyLong()))
+                    .thenAnswer(inv -> {
+                        Long appId = inv.getArgument(2);
+                        String dir = AppConstant.getCodeOutputRootDir() + File.separator
+                                + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
+                        FileUtil.mkdir(dir + File.separator + "src");
+                        FileUtil.writeString("<script setup>// 模型没写组件导入</script>\n",
+                                dir + File.separator + "src" + File.separator + "App.vue", "utf-8");
+                        // 依赖里造一个含目标串的文件：扫描若不限定 src，会误改依赖，
+                        // 构建失败的原因就跑偏了
+                        FileUtil.mkdir(dir + File.separator + "node_modules" + File.separator + "dep");
+                        FileUtil.writeString("import x from '@/components/Dep.vue'\n",
+                                dir + File.separator + "node_modules" + File.separator + "dep"
+                                        + File.separator + "index.js", "utf-8");
+                        return Flux.just("done");
+                    });
+
+            com.quan.aicodehelper.core.healing.BuildSelfHealingService healing =
+                    mock(com.quan.aicodehelper.core.healing.BuildSelfHealingService.class);
+            ReflectionTestUtils.setField(runner, "buildSelfHealingService", healing);
+
+            EvalCase c = caseOf("vue-healing-trigger", CodeGenTypeEnum.VUE_PROJECT);
+            EvalCase.FaultInjection fi = new EvalCase.FaultInjection();
+            fi.setFind("'@/components/");
+            fi.setReplace("'@/components-broken/");
+            c.setFaultInjection(fi);
+            when(loader.load()).thenReturn(singleCaseSet(c));
+
+            EvalRunResult.CaseResult cr = runner.run().getCases().get(0);
+
+            assertThat(cr.isFinalPassed()).isFalse();
+            assertThat(cr.getFailureMessage())
+                    .as("src 下没有目标串就该报错，而不是去改 node_modules 里的依赖")
+                    .contains("故障注入失败");
+            org.mockito.Mockito.verify(healing, org.mockito.Mockito.never())
+                    .buildWithHealingOutcome(anyString(), anyLong());
         }
     }
 
