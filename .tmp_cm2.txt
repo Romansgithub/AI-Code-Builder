@@ -1,4 +1,0 @@
-chore: 移除误提交的临时文件
-
-上一条 commit 用 git add -A 时把两个工作用临时文件（.out.txt、.tmp_cm.txt）
-一起带进去了，这里删掉。
