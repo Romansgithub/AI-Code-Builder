@@ -10,6 +10,7 @@ import com.quan.aicodehelper.core.healing.BuildSelfHealingService;
 import com.quan.aicodehelper.core.healing.HealingOutcome;
 import com.quan.aicodehelper.model.dto.eval.EvalCase;
 import com.quan.aicodehelper.model.dto.eval.EvalSet;
+import com.quan.aicodehelper.model.enums.BuildFailureTypeEnum;
 import com.quan.aicodehelper.model.enums.CodeGenTypeEnum;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -120,17 +121,56 @@ public class EvalRunner {
         Long evalAppId = nextEvalAppId();
         String outputDir = evalOutputDir(evalCase);
 
+        // 每条用例跑在独立虚拟线程上，主线程限时等待。
+        // 目的不是提速，而是隔离：单条用例卡死（比如模型反复自我修复不收敛）
+        // 不能拖垮整轮跑批 —— 否则一次跑批就得从头再来。
+        java.util.concurrent.atomic.AtomicReference<RuntimeException> asyncError =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread worker = Thread.ofVirtual()
+                .name("eval-case-" + evalCase.getId())
+                .start(() -> {
+                    try {
+                        if (evalCase.getCodeGenType() == CodeGenTypeEnum.VUE_PROJECT) {
+                            executeVueCase(evalCase, evalAppId, outputDir, cr);
+                        } else {
+                            executeSimpleCase(evalCase, evalAppId, cr);
+                        }
+                    } catch (RuntimeException e) {
+                        asyncError.set(e);
+                    }
+                });
+
+        int timeoutSeconds = evalProperties.getCaseTimeoutSeconds();
         try {
-            if (evalCase.getCodeGenType() == CodeGenTypeEnum.VUE_PROJECT) {
-                executeVueCase(evalCase, evalAppId, outputDir, cr);
-            } else {
-                executeSimpleCase(evalCase, evalAppId, cr);
+            worker.join(java.time.Duration.ofSeconds(timeoutSeconds));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        if (cr.getGenerateCostMs() == 0L && cr.getBuildCostMs() == 0L) {
+            // 一刀未动说明线程还没跑到计时点就卡住了，或已超时
+            if (worker.isAlive()) {
+                cr.setTimedOut(true);
+                worker.interrupt();
+                log.warn("用例 {} 超过 {} 秒仍未完成，按超时记失败", evalCase.getId(), timeoutSeconds);
             }
-        } catch (Exception e) {
+        } else if (worker.isAlive()) {
+            // 已有部分耗时数据但仍在跑，同样按超时处理
+            cr.setTimedOut(true);
+            worker.interrupt();
+            log.warn("用例 {} 超过 {} 秒仍未结束，按超时记失败", evalCase.getId(), timeoutSeconds);
+        }
+
+        if (cr.isTimedOut()) {
+            cr.setFinalPassed(false);
+            cr.setFailureType(BuildFailureTypeEnum.TIMEOUT.name());
+            cr.setFailureMessage(String.format("用例执行超过 %d 秒被判定为超时", timeoutSeconds));
+        } else if (asyncError.get() != null) {
+            RuntimeException e = asyncError.get();
             cr.setFinalPassed(false);
             cr.setFirstBuildPassed(false);
             cr.setUnexpectedError(e.getMessage());
-            cr.setFailureType(com.quan.aicodehelper.model.enums.BuildFailureTypeEnum.EXECUTION_ERROR.name());
+            cr.setFailureType(BuildFailureTypeEnum.EXECUTION_ERROR.name());
             cr.setFailureMessage(e.getMessage());
             log.error("用例 {} 执行异常：{}", evalCase.getId(), e.getMessage(), e);
         }
@@ -189,7 +229,7 @@ public class EvalRunner {
         cr.setHealingAttempts(0);
         cr.setBuildCostMs(0L);
         if (!saved) {
-            cr.setFailureType(com.quan.aicodehelper.model.enums.BuildFailureTypeEnum.MISSING_DIST.name());
+            cr.setFailureType(BuildFailureTypeEnum.MISSING_DIST.name());
             cr.setFailureMessage("代码未成功保存到 " + dir);
         } else {
             fillOutputSize(dir, cr);
