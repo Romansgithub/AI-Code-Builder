@@ -32,6 +32,7 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
 
 import java.io.File;
@@ -131,17 +132,35 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     aiResponseBuilder.append(chunk);
                     return chunk;
                 })
+                // 说明：以下回调运行在响应式线程中，异步于本方法的调用栈，
+                // 因此不能用 @Transactional 包住整个方法 —— 事务会在流完成前就提交。
+                // 这里每次落库都是独立的单条 insert，本身即原子操作，无需外层事务。
                 .doOnComplete(() -> {
                     String aiResponse = aiResponseBuilder.toString();
                     if (StrUtil.isNotBlank(aiResponse)){
-                        chatHistoryService.addChatMessage(appId, aiResponse, ChatHistoryMessageTypeEnum.AI.getValue(), loginUser.getId());
+                        safeSaveChatMessage(appId, aiResponse, ChatHistoryMessageTypeEnum.AI.getValue(), loginUser.getId());
                     }
                 })
                 .doOnError(error -> {
-                    String errorMessage = "AI回复失败:" + error.getMessage();
-                    chatHistoryService.addChatMessage(appId, errorMessage, ChatHistoryMessageTypeEnum.AI.getValue(), loginUser.getId());
+                    // 仅记录日志，不把异常信息当 AI 回复写入对话历史 ——
+                    // 否则用户刷新页面会看到一条以「AI回复失败」开头的伪消息，
+                    // 且该消息会被回填进模型记忆，污染后续对话上下文。
+                    log.error("应用 {} 生成代码失败：{}", appId, error.getMessage(), error);
                 });
+    }
 
+    /**
+     * 安全落库对话消息：失败仅记录日志，不影响主流程。
+     *
+     * <p>落库发生在响应式流的完成回调中，此时主请求早已返回，
+     * 任何异常都无法反馈给前端，只能自行吞掉并记录，避免线程内异常扩散。</p>
+     */
+    private void safeSaveChatMessage(Long appId, String message, String messageType, Long userId) {
+        try {
+            chatHistoryService.addChatMessage(appId, message, messageType, userId);
+        } catch (Exception e) {
+            log.error("应用 {} 的 {} 消息落库失败：{}", appId, messageType, e.getMessage());
+        }
     }
 
     /**
@@ -234,12 +253,24 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     @Override
     public void generateAppScreenshotAsync(Long appId, String appDeployUrl) {
         Thread.startVirtualThread(() ->{
-            String screenshotUrl = screenshotServiceImpl.generateAndUploadScreenshot(appDeployUrl);
-            App updateApp = new App();
-            updateApp.setId(appId);
-            updateApp.setCover(screenshotUrl);
-            boolean updated = this.updateById(updateApp);
-            ThrowUtils.throwIf(!updated, ErrorCode.OPERATION_ERROR, "更新应用截图失败");
+            try {
+                String screenshotUrl = screenshotServiceImpl.generateAndUploadScreenshot(appDeployUrl);
+                if (StrUtil.isBlank(screenshotUrl)) {
+                    log.warn("应用 {} 截图生成为空，跳过封面更新", appId);
+                    return;
+                }
+                App updateApp = new App();
+                updateApp.setId(appId);
+                updateApp.setCover(screenshotUrl);
+                boolean updated = this.updateById(updateApp);
+                if (!updated) {
+                    log.warn("应用 {} 封面更新失败", appId);
+                }
+            } catch (Exception e) {
+                // 该方法运行在独立虚拟线程中，异常若抛出将无人接收（仅打印到控制台），
+                // 因此必须在此处兜底捕获，避免静默失败
+                log.error("应用 {} 截图生成或封面更新异常：{}", appId, e.getMessage(), e);
+            }
         });
     }
 
@@ -249,18 +280,22 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * @return
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean removeById(Long appId)
     {
-        boolean removed = super.removeById(appId);
-        if (removed){
-            try{
-                chatHistoryService.deleteByAppId(appId);
-            } catch (Exception e)
-            {
-                log.error("删除应用关联对话历史失败:{}", e.getMessage());
-            }
+        if (appId == null || appId <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "应用ID不能为空");
         }
-        return removed;
+        // 先删对话历史、再删应用：两者必须同成同败，
+        // 否则中途失败会残留指向已不存在应用的孤儿对话记录。
+        // 注意执行顺序 —— 若先删应用，一旦后续失败则应用已消失而历史仍在，
+        // 数据更难修复；先清理从数据再删主记录，失败时整体回滚代价最小。
+        chatHistoryService.deleteByAppId(appId);
+        boolean removed = super.removeById(appId);
+        if (!removed) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "删除应用失败");
+        }
+        return true;
     }
 
     /**
