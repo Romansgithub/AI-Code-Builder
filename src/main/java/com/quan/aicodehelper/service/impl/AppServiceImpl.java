@@ -13,6 +13,7 @@ import com.quan.aicodehelper.ai.service.AiCodeGenTypeRoutingService;
 import com.quan.aicodehelper.constant.AppConstant;
 import com.quan.aicodehelper.config.StorageProperties;
 import com.quan.aicodehelper.ai.tools.GenerationProgressRegistry;
+import com.quan.aicodehelper.core.budget.LlmCallGuard;
 import com.quan.aicodehelper.core.builder.BuildResult;
 import com.quan.aicodehelper.core.healing.BuildSelfHealingService;
 import com.quan.aicodehelper.core.stream.GenerationTask;
@@ -92,6 +93,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     @Resource
     private StorageProperties storageProperties;
 
+    /**
+     * LLM 调用预算闸门。类型路由这条路径不经过 Facade，需在此单独过闸。
+     */
+    @Resource
+    private LlmCallGuard llmCallGuard;
+
     @Override
     public QueryWrapper getQueryWrapper(AppQueryRequest appQueryRequest) {
         if (appQueryRequest == null) {
@@ -161,6 +168,19 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             // 抢占失败但不是运行中，说明恰好被并发请求抢先；同样交回现场
             ThrowUtils.throwIf(running == null, ErrorCode.SYSTEM_ERROR, "生成任务启动失败，请重试");
             return running;
+        }
+
+        // 已经抢到任务现场，说明这次请求**确实要真跑一次生成**。
+        // 在继续往下走之前先探一次预算：真正的记账在 Facade 里（那里是
+        // 用户生成与评测跑批的唯一交汇点），这里只做「不消耗」的可行性检查。
+        // 若放到抢占之前，被转为「订阅」的请求也会被算成一次调用（它根本不调模型），
+        // 账目虚高；若不检查就直接往下走，额度不足会留下一个
+        // 「已注册但从未启动」的 RUNNING 任务，把应用挡住直到看门狗超时（默认 20 分钟）。
+        try {
+            llmCallGuard.assertAvailable("代码生成");
+        } catch (RuntimeException e) {
+            generationProgressRegistry.finishTask(appId, e.getMessage());
+            throw e;
         }
 
         // 用户消息先落库：它代表用户的真实输入，与生成成功与否无关。
@@ -238,6 +258,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         app.setUserId(loginUser.getId());
         app.setAppName(initPrompt.substring(0, Math.min(initPrompt.length(), 12)));
         AiCodeGenTypeRoutingService routingService = aiCodeGenTypeRoutingConfig.aiCodeGenTypeRoutingService();
+        // 路由是独立于代码生成的一条 LLM 调用路径，不经过 Facade，
+        // 必须单独过闸门，否则这里会成为一个漏账口子
+        llmCallGuard.acquire("类型路由");
         CodeGenTypeEnum selectedCodeGenType = routingService.routeCodeGenType(initPrompt);
         app.setCodeGenType(selectedCodeGenType.getValue());
         boolean result = this.save(app);

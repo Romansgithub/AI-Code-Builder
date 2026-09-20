@@ -3,7 +3,9 @@ package com.quan.aicodehelper.core.healing;
 import com.quan.aicodehelper.ai.factory.AiCodeGeneratorServiceFactory;
 import com.quan.aicodehelper.ai.service.AiCodeGeneratorService;
 import com.quan.aicodehelper.ai.tools.GenerationProgressRegistry;
+import com.quan.aicodehelper.config.LlmBudgetProperties;
 import com.quan.aicodehelper.config.SelfHealingProperties;
+import com.quan.aicodehelper.core.budget.LlmCallGuard;
 import com.quan.aicodehelper.core.builder.BuildResult;
 import com.quan.aicodehelper.core.builder.VueProjectBuilder;
 import com.quan.aicodehelper.model.enums.BuildFailureTypeEnum;
@@ -46,6 +48,7 @@ class BuildSelfHealingServiceTest {
     private AiCodeGeneratorService aiService;
     private GenerationProgressRegistry progressRegistry;
     private BuildSelfHealingService service;
+    private LlmCallGuard llmCallGuard;
 
     /** 记录推送给前端的进度消息，便于断言用户能看到什么 */
     private final List<String> emittedMessages = new ArrayList<>();
@@ -80,6 +83,13 @@ class BuildSelfHealingServiceTest {
         ReflectionTestUtils.setField(service, "aiCodeGeneratorServiceFactory", serviceFactory);
         ReflectionTestUtils.setField(service, "selfHealingProperties", props);
         ReflectionTestUtils.setField(service, "generationProgressRegistry", progressRegistry);
+
+        // 默认给一个上限充足的真实闸门：这些用例关注的是重试决策逻辑，
+        // 不该被预算逻辑干扰。预算相关的行为在 LyyBudgetTest 里单独验证。
+        LlmBudgetProperties budgetProps = new LlmBudgetProperties();
+        budgetProps.setMaxCalls(1000);
+        llmCallGuard = new LlmCallGuard(budgetProps);
+        ReflectionTestUtils.setField(service, "llmCallGuard", llmCallGuard);
     }
 
     private BuildResult compileError() {
@@ -118,7 +128,6 @@ class BuildSelfHealingServiceTest {
     @Nested
     @DisplayName("不可自愈的失败")
     class NotHealable {
-
         @Test
         @DisplayName("依赖安装失败时绝不应调用 AI —— 改代码解决不了环境问题")
         void dependencyFailureShouldNotCallAi() {
@@ -304,6 +313,53 @@ class BuildSelfHealingServiceTest {
             service.buildWithHealing(PROJECT_PATH, APP_ID);
 
             verify(aiService, never()).generateVueProjectCodeStream(anyLong(), anyString());
+        }
+    }
+
+    @Nested
+    @DisplayName("LLM 预算耗尽")
+    class BudgetExhausted {
+
+        /**
+         * 把闸门换成已耗尽的状态。
+         */
+        private void exhaustBudget() {
+            LlmBudgetProperties props = new LlmBudgetProperties();
+            props.setMaxCalls(1);
+            LlmCallGuard exhausted = new LlmCallGuard(props);
+            exhausted.acquire("先占满");
+            ReflectionTestUtils.setField(service, "llmCallGuard", exhausted);
+        }
+
+        @Test
+        @DisplayName("预算耗尽时必须立刻中止自愈循环，而不是当作「这轮没修好」继续重试")
+        void shouldAbortLoopImmediately() {
+            // 这是本组最关键的一条。askAiToFix 原本吞掉所有异常并返回 false，
+            // 而 false 的语义在外层是「继续下一轮」。若预算异常被吞掉，
+            // 外层会拿已经耗尽的预算把剩余重试次数在一次热循环里烧完 ——
+            // 每次都失败、每次都继续，用户看到的是「一直在修复」但什么都没发生。
+            exhaustBudget();
+            when(vueProjectBuilder.buildProjectWithResult(eq(PROJECT_PATH), eq(APP_ID)))
+                    .thenReturn(compileError());
+
+            BuildResult result = service.buildWithHealing(PROJECT_PATH, APP_ID);
+
+            assertThat(result.isSuccess()).isFalse();
+            // AI 一次都不该被真正调用：预算在发起前就拦住了
+            verify(aiService, never()).generateVueProjectCodeStream(anyLong(), anyString());
+        }
+
+        @Test
+        @DisplayName("预算耗尽时不应把「重试中」的错误提示推给用户")
+        void shouldNotEmitRetryMessage() {
+            // 预算拦截不是「修复未生效」，不该谎报成「继续重试」
+            exhaustBudget();
+            when(vueProjectBuilder.buildProjectWithResult(eq(PROJECT_PATH), eq(APP_ID)))
+                    .thenReturn(compileError());
+
+            service.buildWithHealing(PROJECT_PATH, APP_ID);
+
+            assertThat(emittedMessages).noneMatch(m -> m.contains("继续重试"));
         }
     }
 }

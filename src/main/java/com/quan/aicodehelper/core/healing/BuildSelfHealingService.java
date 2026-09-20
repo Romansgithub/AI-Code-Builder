@@ -6,9 +6,11 @@ import com.quan.aicodehelper.ai.factory.AiCodeGeneratorServiceFactory;
 import com.quan.aicodehelper.ai.service.AiCodeGeneratorService;
 import com.quan.aicodehelper.ai.tools.GenerationProgressRegistry;
 import com.quan.aicodehelper.config.SelfHealingProperties;
+import com.quan.aicodehelper.core.budget.LlmCallGuard;
 import com.quan.aicodehelper.core.builder.BuildErrorExtractor;
 import com.quan.aicodehelper.core.builder.BuildResult;
 import com.quan.aicodehelper.core.builder.VueProjectBuilder;
+import com.quan.aicodehelper.exception.BusinessException;
 import com.quan.aicodehelper.model.enums.CodeGenTypeEnum;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -53,6 +55,17 @@ public class BuildSelfHealingService {
 
     @Resource
     private GenerationProgressRegistry generationProgressRegistry;
+
+    /**
+     * LLM 调用预算闸门。
+     *
+     * <p>必须在这里过闸：自愈是直接调 {@link AiCodeGeneratorService} 的，
+     * 并不经过 {@code AiCodeGeneratorFacade}。而自愈恰恰是**最贵**的一条路径
+     * ——一次生成失败最多触发 maxAttempts 轮完整生成，每轮都是足量输入输出。
+     * 漏掉这里的后果就是「预算显示没用到，实际已经花了几倍」。</p>
+     */
+    @Resource
+    private LlmCallGuard llmCallGuard;
 
     /**
      * 带自愈的构建。
@@ -115,14 +128,27 @@ public class BuildSelfHealingService {
 
             attemptErrors.add(describeAttempt(attempt, result));
 
-            boolean repaired = askAiToFix(appId, result, attempt, maxAttempts);
-            if (!repaired) {
+            AiFixOutcome outcome = askAiToFix(appId, result, attempt, maxAttempts);
+
+            if (outcome == AiFixOutcome.BUDGET_EXHAUSTED) {
+                // 预算耗尽既不是「修好了」也不是「修不动」：它是「没资格再试」。
+                // 必须与「本轮没修好」区分开 —— 后者会 continue 进下一轮，
+                // 而预算一旦耗尽，后续每一轮都会失败，等于把剩余重试次数
+                // 在一次热循环里空转烧完，用户看到「一直在修复」却毫无进展。
+                // 这里直接跳出循环，让构建失败的结果照常返回给调用方。
+                log.warn("LLM 预算耗尽，中止构建自愈（已完成 {} 轮）", executedAttempts);
+                emit(appId, "AI 调用额度已用尽，已停止自动修复，请手动检查构建错误");
+                result.setErrorMessage(buildFinalErrorMessage(maxAttempts, attemptErrors, result));
+                return HealingOutcome.of(result, false, executedAttempts - 1,
+                        System.currentTimeMillis() - startedAt);
+            }
+
+            if (outcome == AiFixOutcome.NOT_REPAIRED) {
                 log.warn("第 {} 轮自愈中，AI 未能给出有效修复", attempt);
                 emit(appId, "自动修复未生效，继续重试...");
                 // 继续下一轮：模型没改成功，但错误信息还在，可以再试
                 continue;
             }
-
             result = vueProjectBuilder.buildProjectWithResult(projectPath, appId);
             if (result.isSuccess()) {
                 log.info("应用 {} 在第 {} 轮自愈后构建成功", appId, attempt);
@@ -153,14 +179,19 @@ public class BuildSelfHealingService {
      * <p>复用同一个 {@code appId} 对应的 AI 服务实例与对话记忆，
      * 因此模型能看到自己此前写入的文件内容，修复时不必重新读取全部上下文。</p>
      *
-     * @return true 表示 AI 调用完成且未抛异常（不代表一定修好了，需重新构建验证）
+     * @return 修复尝试的结果。刻意用三态而非 boolean ——
+     *         「AI 没修好，可以再试」与「没资格再试」必须区分，
+     *         否则外层循环会把预算耗尽误当成前者而空转（见调用处注释）。
      */
-    private boolean askAiToFix(Long appId, BuildResult result, int attempt, int maxAttempts) {
+    private AiFixOutcome askAiToFix(Long appId, BuildResult result, int attempt, int maxAttempts) {
         try {
             AiCodeGeneratorService service = aiCodeGeneratorServiceFactory
                     .getAiCodeGeneratorService(appId, CodeGenTypeEnum.VUE_PROJECT);
 
             String prompt = buildHealingPrompt(result);
+
+            // 自愈直接调 service，不经过 Facade，所以在真正发起调用前单独过闸
+            llmCallGuard.acquire("构建自愈-第" + attempt + "轮");
 
             // 同步消费整个流：自愈在独立虚拟线程中执行，此处阻塞不影响 SSE 主流程。
             // 模型的回复只会是一句简短说明，但工具调用过程可能较长。
@@ -171,11 +202,27 @@ public class BuildSelfHealingService {
 
             log.info("第 {}/{} 轮自愈，AI 回复：{}", attempt, maxAttempts,
                     StrUtil.maxLength(reply.toString().trim(), 300));
-            return true;
+            return AiFixOutcome.REPAIRED;
+        } catch (BusinessException e) {
+            // 预算耗尽：单独识别出来，交由调用方中止整个循环
+            log.warn("第 {}/{} 轮自愈因预算耗尽被拦截：{}", attempt, maxAttempts, e.getMessage());
+            return AiFixOutcome.BUDGET_EXHAUSTED;
         } catch (Exception e) {
             log.error("第 {}/{} 轮自愈调用 AI 失败：{}", attempt, maxAttempts, e.getMessage(), e);
-            return false;
+            return AiFixOutcome.NOT_REPAIRED;
         }
+    }
+
+    /**
+     * 单轮修复尝试的结果。
+     */
+    private enum AiFixOutcome {
+        /** AI 完成了修复动作（不代表一定修好，需重新构建验证） */
+        REPAIRED,
+        /** AI 这一轮没能给出有效修复，可以再试 */
+        NOT_REPAIRED,
+        /** 预算耗尽，没有资格再调用 —— 必须中止循环 */
+        BUDGET_EXHAUSTED
     }
 
     /**

@@ -4,6 +4,8 @@ import com.quan.aicodehelper.ai.factory.AiCodeGeneratorServiceFactory;
 import com.quan.aicodehelper.ai.service.AiCodeGeneratorService;
 import com.quan.aicodehelper.ai.tools.GenerationProgressRegistry;
 import com.quan.aicodehelper.constant.AppConstant;
+import com.quan.aicodehelper.config.LlmBudgetProperties;
+import com.quan.aicodehelper.core.budget.LlmCallGuard;
 import com.quan.aicodehelper.core.builder.BuildResult;
 import com.quan.aicodehelper.core.eval.CodeGenEvalRecorder;
 import com.quan.aicodehelper.core.eval.GenerationMetric;
@@ -102,6 +104,11 @@ class AiCodeGeneratorFacadeEvalTest {
         ReflectionTestUtils.setField(facade, "buildSelfHealingService", healingService);
         ReflectionTestUtils.setField(facade, "generationProgressRegistry", progressRegistry);
         ReflectionTestUtils.setField(facade, "codeGenEvalRecorder", recorder);
+        // 预算闸门给一个上限充足的真实实例：本组用例验证的是评测埋点语义，
+        // 不该被预算逻辑干扰（预算行为由 LlmCallGuardTest 单独覆盖）
+        LlmBudgetProperties budgetProperties = new LlmBudgetProperties();
+        budgetProperties.setMaxCalls(10_000);
+        ReflectionTestUtils.setField(facade, "llmCallGuard", new LlmCallGuard(budgetProperties));
     }
 
     @AfterEach

@@ -4,6 +4,7 @@ import com.quan.aicodehelper.ai.factory.AiCodeGeneratorServiceFactory;
 import com.quan.aicodehelper.ai.service.AiCodeGeneratorService;
 import com.quan.aicodehelper.ai.tools.GenerationProgressRegistry;
 import com.quan.aicodehelper.constant.AppConstant;
+import com.quan.aicodehelper.core.budget.LlmCallGuard;
 import com.quan.aicodehelper.core.builder.BuildResult;
 import com.quan.aicodehelper.core.eval.CodeGenEvalRecorder;
 import com.quan.aicodehelper.core.eval.GenerationMetric;
@@ -48,6 +49,17 @@ public class AiCodeGeneratorFacade {
      */
     @Resource
     private CodeGenEvalRecorder codeGenEvalRecorder;
+
+    /**
+     * LLM 调用预算闸门。
+     *
+     * <p>装在这一层而不是各调用点的原因：这里是「生成类调用」的唯一交汇处 ——
+     * 用户生成、构建自愈、评测跑批三条路径最终都要经过
+     * {@link #generateCodeStream}。装在这里可以用一处代码覆盖三条路径，
+     * 将来新增路径也不会漏账。</p>
+     */
+    @Resource
+    private LlmCallGuard llmCallGuard;
 
     /**
      * 处理代码流通用方法
@@ -214,6 +226,10 @@ public class AiCodeGeneratorFacade {
         if (codeGenTypeEnum == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "代码生成类型不能为空");
         }
+        // 闸门必须在任何模型调用之前 —— 顺序反了就变成「先花钱再记账」。
+        // 裸奔出去（fail-open + 日志）而不是放行，是因为漏一次账就
+        // 会在后续每一次调用上重复漏，账目永远不可信。
+        llmCallGuard.acquire("代码生成-" + codeGenTypeEnum.getValue());
         return switch (codeGenTypeEnum) {
             case HTML -> {
                 AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum);
