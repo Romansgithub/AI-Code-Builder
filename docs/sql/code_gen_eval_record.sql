@@ -30,11 +30,12 @@ CREATE TABLE IF NOT EXISTS `code_gen_eval_record`
     `updateTime`       DATETIME     NULL COMMENT '更新时间',
     `isDelete`         TINYINT      NOT NULL DEFAULT 0 COMMENT '是否删除',
     PRIMARY KEY (`id`),
-    -- 跑批汇总按批次查询；单次生成指标按类型/时间聚合
+    -- 跑批汇总按批次查询；单次生成指标按类型/时间聚合。
+    -- 报告接口固定带 isDelete = 0 过滤，故把 isDelete 放进复合索引最左列。
     INDEX `idx_batchId` (`batchId`),
     INDEX `idx_appId` (`appId`),
     INDEX `idx_createTime` (`createTime`),
-    INDEX `idx_codeGenType` (`codeGenType`)
+    INDEX `idx_type_delete_time` (`codeGenType`, `isDelete`, `createTime`)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci COMMENT ='代码生成质量评测记录';
