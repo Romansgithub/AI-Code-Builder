@@ -220,6 +220,216 @@ class EvalOutputPathContractTest {
                     .isNotNull()
                     .isEqualTo(modelWriteDir.get());
         }
+
+        @Test
+        @DisplayName("Vue 用例：产物统计必须覆盖 AI 生成的源码，不能恒为 0")
+        void shouldMeasureVueSourceNotDist() {
+            // 回归背景：修路径时曾把「统计 dist 目录」传进 measureOutput，
+            // 而该方法本身排除 dist → 每个文件都命中排除规则 → 产物恒为
+            // 「0个文件/0.0KB」。报告里 Vue 三条全是 0，看着像没生成东西，
+            // 实际代码好端端躺在项目里。
+            when(facade.generateCodeStream(anyString(), any(), anyLong()))
+                    .thenAnswer(inv -> {
+                        Long appId = inv.getArgument(2);
+                        String dir = AppConstant.getCodeOutputRootDir() + File.separator
+                                + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
+                        FileUtil.mkdir(dir);
+                        // AI 生成的三份源码/配置 —— 这才是要统计的东西
+                        FileUtil.writeString("{\"name\":\"x\"}",
+                                dir + File.separator + "package.json", "utf-8");
+                        FileUtil.mkdir(dir + File.separator + "src");
+                        FileUtil.writeString("<template/>",
+                                dir + File.separator + "src" + File.separator + "App.vue", "utf-8");
+                        FileUtil.writeString("// entry",
+                                dir + File.separator + "src" + File.separator + "main.js", "utf-8");
+                        // 构建产物与依赖：都不该计入
+                        FileUtil.mkdir(dir + File.separator + "dist" + File.separator + "assets");
+                        FileUtil.writeString("<html></html>",
+                                dir + File.separator + "dist" + File.separator + "index.html", "utf-8");
+                        FileUtil.writeString("// bundle",
+                                dir + File.separator + "dist" + File.separator + "assets"
+                                        + File.separator + "index.js", "utf-8");
+                        return Flux.just("done");
+                    });
+
+            com.quan.aicodehelper.core.healing.BuildSelfHealingService healing =
+                    mock(com.quan.aicodehelper.core.healing.BuildSelfHealingService.class);
+            when(healing.buildWithHealingOutcome(anyString(), anyLong()))
+                    .thenReturn(com.quan.aicodehelper.core.healing.HealingOutcome.of(
+                            com.quan.aicodehelper.core.builder.BuildResult.ok("ok"), true, 0, 1L));
+            ReflectionTestUtils.setField(runner, "buildSelfHealingService", healing);
+
+            when(loader.load()).thenReturn(singleCaseSet(caseOf("vue-todo", CodeGenTypeEnum.VUE_PROJECT)));
+
+            EvalRunResult.CaseResult cr = runner.run().getCases().get(0);
+
+            assertThat(cr.isFinalPassed()).isTrue();
+            assertThat(cr.getFileCount())
+                    .as("应统计到 package.json + src/App.vue + src/main.js 三份源码，"
+                            + "而不是被节点排除规则清成 0")
+                    .isEqualTo(3);
+            assertThat(cr.getTotalBytes())
+                    .as("字节数也不能是 0")
+                    .isPositive();
+        }
+    }
+
+    @Nested
+    @DisplayName("故障注入")
+    class FaultInjectionExecution {
+
+        /**
+         * 造一个「模型刚生成完」的 Vue 工程：App.vue 里按常规写法导入组件。
+         * 注入的目标就是把这个导入路径改坏。
+         */
+        private void stubGeneratedVueProject() {
+            when(facade.generateCodeStream(anyString(), any(), anyLong()))
+                    .thenAnswer(inv -> {
+                        Long appId = inv.getArgument(2);
+                        String dir = AppConstant.getCodeOutputRootDir() + File.separator
+                                + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
+                        FileUtil.mkdir(dir + File.separator + "src");
+                        FileUtil.writeString(
+                                "<script setup>\nimport Hello from './components/Hello.vue'\n</script>\n",
+                                dir + File.separator + "src" + File.separator + "App.vue", "utf-8");
+                        return Flux.just("done");
+                    });
+        }
+
+        private static EvalCase healingCase() {
+            EvalCase c = caseOf("vue-healing-trigger", CodeGenTypeEnum.VUE_PROJECT);
+            EvalCase.FaultInjection fi = new EvalCase.FaultInjection();
+            fi.setFile("src/App.vue");
+            fi.setFind("from './components/");
+            fi.setReplace("from './components-broken/");
+            c.setFaultInjection(fi);
+            return c;
+        }
+
+        @Test
+        @DisplayName("注入生效：传给构建器的目录里，目标文件确实已被改坏")
+        void shouldBreakArtifactBeforeBuild() {
+            stubGeneratedVueProject();
+
+            java.util.concurrent.atomic.AtomicReference<String> appVueAtBuildTime =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger builtWithHealing = new java.util.concurrent.atomic.AtomicInteger();
+
+            com.quan.aicodehelper.core.healing.BuildSelfHealingService healing =
+                    mock(com.quan.aicodehelper.core.healing.BuildSelfHealingService.class);
+            when(healing.buildWithHealingOutcome(anyString(), anyLong()))
+                    .thenAnswer(inv -> {
+                        String dir = inv.getArgument(0);
+                        builtWithHealing.incrementAndGet();
+                        appVueAtBuildTime.set(FileUtil.readString(
+                                new File(dir, "src" + File.separator + "App.vue"),
+                                java.nio.charset.StandardCharsets.UTF_8));
+                        // 模拟真实自愈：第一轮失败，重试后修好
+                        return com.quan.aicodehelper.core.healing.HealingOutcome.of(
+                                com.quan.aicodehelper.core.builder.BuildResult.ok("ok"), false, 1, 1L);
+                    });
+            ReflectionTestUtils.setField(runner, "buildSelfHealingService", healing);
+
+            when(loader.load()).thenReturn(singleCaseSet(healingCase()));
+
+            EvalRunResult.CaseResult cr = runner.run().getCases().get(0);
+
+            assertThat(builtWithHealing.get()).isEqualTo(1);
+            assertThat(appVueAtBuildTime.get())
+                    .as("构建时读到的应该已是破坏后的内容 —— 否则首轮不会失败，自愈也就没被验证")
+                    .contains("./components-broken/")
+                    .doesNotContain("./components/");
+            assertThat(cr.isFirstBuildPassed())
+                    .as("注入的目的就是让首轮必然失败")
+                    .isFalse();
+            assertThat(cr.getHealingAttempts()).isEqualTo(1);
+            assertThat(cr.isFinalPassed()).isTrue();
+        }
+
+        @Test
+        @DisplayName("注入失败必须显式报错，绝不能静默跳过产出假数据")
+        void shouldFailLoudlyWhenFindStringMissing() {
+            // 模型改用了别的导入写法 → find 串找不到。此处若静默跳过，
+            // 首轮大概率直接构建通过，报告上显示一条漂亮的「一次通过」，
+            // 而这条用例存在的唯一意义已经消失。
+            when(facade.generateCodeStream(anyString(), any(), anyLong()))
+                    .thenAnswer(inv -> {
+                        Long appId = inv.getArgument(2);
+                        String dir = AppConstant.getCodeOutputRootDir() + File.separator
+                                + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
+                        FileUtil.mkdir(dir + File.separator + "src");
+                        // 只写一个不含目标串的 App.vue
+                        FileUtil.writeString("<script setup>// 没有组件导入</script>\n",
+                                dir + File.separator + "src" + File.separator + "App.vue", "utf-8");
+                        return Flux.just("done");
+                    });
+
+            com.quan.aicodehelper.core.healing.BuildSelfHealingService healing =
+                    mock(com.quan.aicodehelper.core.healing.BuildSelfHealingService.class);
+            ReflectionTestUtils.setField(runner, "buildSelfHealingService", healing);
+
+            when(loader.load()).thenReturn(singleCaseSet(healingCase()));
+
+            EvalRunResult.CaseResult cr = runner.run().getCases().get(0);
+
+            assertThat(cr.isFinalPassed()).isFalse();
+            assertThat(cr.getFailureMessage())
+                    .as("必须写明是注入失败，而不是笼统的构建失败")
+                    .contains("故障注入失败")
+                    .contains("未找到待替换内容");
+            assertThat(cr.getFailureType()).isEqualTo("EXECUTION_ERROR");
+            // 注入都没成功，就不该再跑去构建
+            org.mockito.Mockito.verify(healing, org.mockito.Mockito.never())
+                    .buildWithHealingOutcome(anyString(), anyLong());
+        }
+
+        @Test
+        @DisplayName("目标文件不存在同样要显式报错")
+        void shouldFailWhenTargetFileMissing() {
+            when(facade.generateCodeStream(anyString(), any(), anyLong()))
+                    .thenAnswer(inv -> {
+                        Long appId = inv.getArgument(2);
+                        // 只建目录与 package.json，不写 App.vue
+                        String dir = AppConstant.getCodeOutputRootDir() + File.separator
+                                + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
+                        FileUtil.mkdir(dir);
+                        FileUtil.writeString("{}", dir + File.separator + "package.json", "utf-8");
+                        return Flux.just("done");
+                    });
+
+            ReflectionTestUtils.setField(runner, "buildSelfHealingService",
+                    mock(com.quan.aicodehelper.core.healing.BuildSelfHealingService.class));
+            when(loader.load()).thenReturn(singleCaseSet(healingCase()));
+
+            EvalRunResult.CaseResult cr = runner.run().getCases().get(0);
+
+            assertThat(cr.isFinalPassed()).isFalse();
+            assertThat(cr.getFailureMessage())
+                    .contains("故障注入失败")
+                    .contains("目标文件不存在");
+        }
+
+        @Test
+        @DisplayName("没配注入的用例行为不变：照常构建，不受注入逻辑影响")
+        void normalCaseUnaffected() {
+            stubGeneratedVueProject();
+
+            com.quan.aicodehelper.core.healing.BuildSelfHealingService healing =
+                    mock(com.quan.aicodehelper.core.healing.BuildSelfHealingService.class);
+            when(healing.buildWithHealingOutcome(anyString(), anyLong()))
+                    .thenReturn(com.quan.aicodehelper.core.healing.HealingOutcome.of(
+                            com.quan.aicodehelper.core.builder.BuildResult.ok("ok"), true, 0, 1L));
+            ReflectionTestUtils.setField(runner, "buildSelfHealingService", healing);
+
+            when(loader.load()).thenReturn(singleCaseSet(
+                    caseOf("vue-todo", CodeGenTypeEnum.VUE_PROJECT)));
+
+            EvalRunResult.CaseResult cr = runner.run().getCases().get(0);
+
+            assertThat(cr.isFirstBuildPassed()).isTrue();
+            assertThat(cr.isFinalPassed()).isTrue();
+            assertThat(cr.getHealingAttempts()).isZero();
+        }
     }
 
     @Nested

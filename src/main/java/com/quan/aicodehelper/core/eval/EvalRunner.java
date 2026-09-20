@@ -223,6 +223,25 @@ public class EvalRunner {
         // 1) 消费代码生成流。Vue 模式下模型通过文件工具直接写盘，流里主要是过程性文本
         consumeGenerationStream(evalCase, evalAppId, cr);
 
+        // 2) 故障注入：在「代码已落盘」与「开始构建」之间刻意破坏一处产物。
+        // 这样首轮构建必然失败，自愈才有事可做 —— 否则模型写得好时一次就过，
+        // 「自愈成功率」永远是「本次无用例触发自愈」，整条链路等于没被验证过。
+        FaultInjectionOutcome injection = injectFaultIfConfigured(evalCase, outputDir);
+        if (!injection.applied() && injection.configured()) {
+            // 注入失败绝不能静默跳过：跳过后首轮很可能直接构建通过，
+            // 报告上显示一条「一次通过」的漂亮数据，而这条用例存在的唯一意义
+            // （验证自愈）悄然消失了。宁可把这条判成失败并写明原因。
+            cr.setFirstBuildPassed(false);
+            cr.setFinalPassed(false);
+            cr.setHealingAttempts(0);
+            cr.setBuildCostMs(0L);
+            cr.setFailureType(BuildFailureTypeEnum.EXECUTION_ERROR.name());
+            cr.setFailureMessage("故障注入失败：" + injection.reason()
+                    + "（该用例靠注入制造必然失败来验证自愈，注入没生效则本轮数据无意义）");
+            log.error("用例 {} 故障注入失败：{}", evalCase.getId(), injection.reason());
+            return;
+        }
+
         long buildStartedAt = System.currentTimeMillis();
         HealingOutcome outcome = buildSelfHealingService.buildWithHealingOutcome(outputDir, evalAppId);
         cr.setBuildCostMs(System.currentTimeMillis() - buildStartedAt);
@@ -238,8 +257,75 @@ public class EvalRunner {
             cr.setFailureMessage(buildResult.getErrorMessage());
         }
         if (outcome.isFinalPassed()) {
-            fillOutputSize(new File(outputDir, "dist").getAbsolutePath(), cr);
+            // 统计项目根而不是 dist：要衡量的是「AI 写了多少代码」，
+            // 而 dist 是 vite 压缩后的构建产物，大小反映的是打包结果不是生成量。
+            // 且 measureOutput 本身会排除 node_modules 与 dist，
+            // 传 dist 进去会让每个文件都命中排除规则 → 恒为 0（这个坑踩过一次）。
+            fillOutputSize(outputDir, cr);
         }
+    }
+
+    /**
+     * 故障注入的执行结果。
+     *
+     * <p>用一个小对象而不是 boolean，是为了让「没配置注入」和「配置了但注入失败」
+     * 能被区分开 —— 前者是正常流程，后者是必须暴露的异常。</p>
+     */
+    private record FaultInjectionOutcome(boolean configured, boolean applied, String reason) {
+        static FaultInjectionOutcome notConfigured() {
+            return new FaultInjectionOutcome(false, false, null);
+        }
+
+        static FaultInjectionOutcome injected() {
+            return new FaultInjectionOutcome(true, true, null);
+        }
+
+        static FaultInjectionOutcome failed(String reason) {
+            return new FaultInjectionOutcome(true, false, reason);
+        }
+    }
+
+    /**
+     * 按用例配置破坏产物，制造一处确定性的、可自愈的构建失败。
+     *
+     * <p>只支持「整文件读 → 字符串替换 → 整文件写」这一种形式：足够表达
+     * 「把 import 路径改到不存在的目录」这类典型可自愈故障（会以
+     * {@code Could not resolve} 形式表现为 {@code COMPILE_ERROR}，
+     * 而这是 {@link BuildFailureTypeEnum#isHealable()} 里唯一为 true 的类型），
+     * 又不至于把评测集变成一个脚本引擎。</p>
+     */
+    private FaultInjectionOutcome injectFaultIfConfigured(EvalCase evalCase, String outputDir) {
+        EvalCase.FaultInjection fi = evalCase.getFaultInjection();
+        if (fi == null) {
+            return FaultInjectionOutcome.notConfigured();
+        }
+        File target = new File(outputDir, fi.getFile());
+        if (!target.isFile()) {
+            return FaultInjectionOutcome.failed(
+                    "目标文件不存在：" + target.getAbsolutePath());
+        }
+        String content;
+        try {
+            content = FileUtil.readString(target, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return FaultInjectionOutcome.failed("读取目标文件失败：" + e.getMessage());
+        }
+        if (!content.contains(fi.getFind())) {
+            // 找不到就报错而不是静默跳过。这一条会随模型输出风格漂移而命中失败，
+            // 一旦命中失败必须让人立刻知道并去修 find 串，而不是继续产出假数据。
+            return FaultInjectionOutcome.failed(String.format(
+                    "在 %s 中未找到待替换内容「%s」，可能是模型输出的导入写法变了，请调整 find 串",
+                    fi.getFile(), fi.getFind()));
+        }
+        String broken = content.replace(fi.getFind(), fi.getReplace());
+        try {
+            FileUtil.writeString(broken, target, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return FaultInjectionOutcome.failed("写回目标文件失败：" + e.getMessage());
+        }
+        log.info("用例 {} 已注入故障：{} 中「{}」→「{}」",
+                evalCase.getId(), fi.getFile(), fi.getFind(), fi.getReplace());
+        return FaultInjectionOutcome.injected();
     }
 
     /**

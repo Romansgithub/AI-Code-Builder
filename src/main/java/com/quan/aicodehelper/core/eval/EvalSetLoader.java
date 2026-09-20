@@ -18,6 +18,7 @@ import org.springframework.stereotype.Component;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -65,7 +66,10 @@ public class EvalSetLoader {
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "评测集 JSON 解析失败：" + e.getMessage());
+            // 把异常类型也带上：有些异常（如 NPE）getMessage() 为 null，
+            // 只打 message 会得到一句「解析失败：null」，等于没提供任何线索。
+            String detail = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "评测集 JSON 解析失败：" + detail);
         }
 
         validate(evalSet);
@@ -100,9 +104,57 @@ public class EvalSetLoader {
             c.setDescription(node.getStr("description"));
             c.setPrompt(node.getStr("prompt"));
             c.setCodeGenType(resolveType(node.getStr("codeGenType"), i + 1, c.getId()));
+            c.setFaultInjection(resolveFaultInjection(node, i + 1));
             evalSet.getCases().add(c);
         }
         return evalSet;
+    }
+
+    /**
+     * 解析故障注入配置。
+     *
+     * <p>没有 {@code faultInjection} 节点时返回 null（正常用例不注入），
+     * 但一旦写了这个节点，三个字段就都必须完整 —— 半填的注入配置是配置错误，
+     * 而不是「没有注入」。若在这里宽容处理成 null，跑批会静默跳过注入，
+     * 得到的「首轮就通过」是假数据，比直接报错危险得多。</p>
+     */
+    private EvalCase.FaultInjection resolveFaultInjection(JSONObject node, int index) {
+        JSONObject fi = node.getJSONObject("faultInjection");
+        if (fi == null) {
+            return null;
+        }
+        EvalCase.FaultInjection injection = new EvalCase.FaultInjection();
+        // 不用 fi.getStr(...) —— 它内部是 StrUtil.toString，值为 null 时会返回
+        // "null" 这个字面量，于是「字段没填」会被当成「填了内容」，缺失检查彻底失效。
+        injection.setFile(readText(fi, "file"));
+        injection.setFind(readText(fi, "find"));
+        injection.setReplace(readText(fi, "replace"));
+        // 逐字段判空而不是塞进 Map.entry —— entry 不接受 null，而「字段没填」
+        // 恰恰就是 null，用 Map 组装会在判空之前先炸，缺失检查等于没写。
+        List<String> missing = new java.util.ArrayList<>();
+        if (StrUtil.isBlank(injection.getFile())) {
+            missing.add("file");
+        }
+        if (StrUtil.isBlank(injection.getFind())) {
+            missing.add("find");
+        }
+        if (StrUtil.isBlank(injection.getReplace())) {
+            missing.add("replace");
+        }
+        if (!missing.isEmpty()) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    String.format("第 %d 条用例的 faultInjection 缺少字段：%s",
+                            index, String.join("、", missing)));
+        }
+        return injection;
+    }
+
+    /**
+     * 取字符串字段，值为 null 或缺省时返回 null（而不是 "null" 字面量）。
+     */
+    private static String readText(JSONObject node, String key) {
+        Object value = node.get(key);
+        return value == null ? null : value.toString();
     }
 
     /**
@@ -179,6 +231,35 @@ public class EvalSetLoader {
             if (StrUtil.isBlank(c.getPrompt())) {
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR, "用例「" + c.getId() + "」缺少 prompt");
             }
+            validateFaultInjection(c);
+        }
+    }
+
+    /**
+     * 校验故障注入的路径安全性。
+     *
+     * <p>注入是按「项目根 + 相对路径」去改文件的，路径一旦能逃出项目根
+     * （{@code ../} 或绝对路径），评测就不再是「破坏被测产物」而变成
+     * 「随机改磁盘上的文件」了。这种错必须在校验期拦下，不能等跑批时才炸。</p>
+     */
+    private void validateFaultInjection(EvalCase c) {
+        EvalCase.FaultInjection fi = c.getFaultInjection();
+        if (fi == null) {
+            return;
+        }
+        String file = fi.getFile().trim().replace('\\', '/');
+        if (file.startsWith("/") || file.matches("^[A-Za-z]:.*")) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "用例「" + c.getId() + "」的 faultInjection.file 必须是相对路径：" + fi.getFile());
+        }
+        java.nio.file.Path normalized = java.nio.file.Paths.get(file).normalize();
+        if (normalized.startsWith("..")) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "用例「" + c.getId() + "」的 faultInjection.file 不允许跳出项目目录：" + fi.getFile());
+        }
+        if (fi.getFind().equals(fi.getReplace())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "用例「" + c.getId() + "」的 faultInjection 替换前后内容相同，起不到注入效果");
         }
     }
 }

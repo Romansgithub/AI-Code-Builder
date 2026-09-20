@@ -239,6 +239,125 @@ class EvalSetLoaderTest {
     }
 
     @Nested
+    @DisplayName("故障注入配置")
+    class FaultInjectionParsing {
+
+        @Test
+        @DisplayName("内置评测集里应有一条用例配了故障注入 —— 否则自愈链路永远没被验证过")
+        void builtinSetShouldContainInjectionCase() {
+            EvalSet evalSet = loader.load();
+
+            List<EvalCase> withInjection = evalSet.getCases().stream()
+                    .filter(c -> c.getFaultInjection() != null)
+                    .toList();
+            assertThat(withInjection)
+                    .as("没有注入用例时，报告里的自愈成功率永远是「本次无用例触发自愈」")
+                    .isNotEmpty();
+            for (EvalCase c : withInjection) {
+                assertThat(c.getCodeGenType())
+                        .as("自愈只对 Vue 工程生效，注入用例必须是 VUE_PROJECT")
+                        .isEqualTo(CodeGenTypeEnum.VUE_PROJECT);
+                assertThat(c.getFaultInjection().getFind())
+                        .as("替换前后相同起不到注入效果")
+                        .isNotEqualTo(c.getFaultInjection().getReplace());
+            }
+        }
+
+        @Test
+        @DisplayName("未写 faultInjection 的用例应解析为 null，走正常流程")
+        void shouldBeNullWhenAbsent() {
+            String json = """
+                    {"name":"t","version":"1.0","cases":[
+                      {"id":"a","description":"d","codeGenType":"vue_project","prompt":"p"}]}
+                    """;
+
+            EvalSet set = parseWith(json);
+
+            assertThat(set.getCases().get(0).getFaultInjection()).isNull();
+        }
+
+        @Test
+        @DisplayName("完整配置应逐字段解析出来")
+        void shouldParseCompleteConfig() {
+            String json = """
+                    {"name":"t","version":"1.0","cases":[
+                      {"id":"a","description":"d","codeGenType":"vue_project","prompt":"p",
+                       "faultInjection":{"file":"src/App.vue",
+                                         "find":"from './components/",
+                                         "replace":"from './components-broken/"}}]}
+                    """;
+
+            EvalSet set = parseWith(json);
+
+            EvalCase.FaultInjection fi = set.getCases().get(0).getFaultInjection();
+            assertThat(fi).isNotNull();
+            assertThat(fi.getFile()).isEqualTo("src/App.vue");
+            assertThat(fi.getFind()).isEqualTo("from './components/");
+            assertThat(fi.getReplace()).isEqualTo("from './components-broken/");
+        }
+
+        @Test
+        @DisplayName("三个字段缺任何一个都应报错，不能宽容成「无注入」")
+        void shouldRejectIncompleteConfig() {
+            String json = """
+                    {"name":"t","version":"1.0","cases":[
+                      {"id":"a","description":"d","codeGenType":"vue_project","prompt":"p",
+                       "faultInjection":{"file":"src/App.vue"}}]}
+                    """;
+
+            // 宽容处理会让注入被静默跳过 → 首轮直接通过 → 报告显示漂亮数据，
+            // 而这条用例存在的唯一意义（验证自愈）已经悄悄消失。
+            assertThatThrownBy(() -> parseWith(json))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("faultInjection 缺少字段")
+                    .hasMessageContaining("find")
+                    .hasMessageContaining("replace");
+        }
+
+        @Test
+        @DisplayName("file 不允许跳出项目目录，否则就等于随机改磁盘上的文件")
+        void shouldRejectEscapingPath() {
+            String json = """
+                    {"name":"t","version":"1.0","cases":[
+                      {"id":"a","description":"d","codeGenType":"vue_project","prompt":"p",
+                       "faultInjection":{"file":"../../etc/hosts","find":"a","replace":"b"}}]}
+                    """;
+
+            assertThatThrownBy(() -> parseWith(json))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("不允许跳出项目目录");
+        }
+
+        @Test
+        @DisplayName("file 不允许是绝对路径")
+        void shouldRejectAbsolutePath() {
+            String json = """
+                    {"name":"t","version":"1.0","cases":[
+                      {"id":"a","description":"d","codeGenType":"vue_project","prompt":"p",
+                       "faultInjection":{"file":"C:/Windows/system.ini","find":"a","replace":"b"}}]}
+                    """;
+
+            assertThatThrownBy(() -> parseWith(json))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("必须是相对路径");
+        }
+
+        @Test
+        @DisplayName("替换前后内容相同应报错 —— 那是配置写错了，不是有效注入")
+        void shouldRejectNoOpReplacement() {
+            String json = """
+                    {"name":"t","version":"1.0","cases":[
+                      {"id":"a","description":"d","codeGenType":"vue_project","prompt":"p",
+                       "faultInjection":{"file":"src/App.vue","find":"same","replace":"same"}}]}
+                    """;
+
+            assertThatThrownBy(() -> parseWith(json))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("替换前后内容相同");
+        }
+    }
+
+    @Nested
     @DisplayName("校验规则")
     class Validation {
 

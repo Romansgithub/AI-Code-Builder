@@ -1,0 +1,9 @@
+﻿REMAINING=0
+GIT:
+ M src/main/java/com/quan/aicodehelper/core/eval/EvalRunner.java
+ M src/main/java/com/quan/aicodehelper/core/eval/EvalSetLoader.java
+ M src/main/java/com/quan/aicodehelper/model/dto/eval/EvalCase.java
+ M src/main/resources/eval/codegen-eval-set.json
+ M src/test/java/com/quan/aicodehelper/core/eval/EvalOutputPathContractTest.java
+ M src/test/java/com/quan/aicodehelper/core/eval/EvalSetLoaderTest.java
+
