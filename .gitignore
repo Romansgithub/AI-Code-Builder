@@ -1,0 +1,62 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+/temp/
+
+# ---------- 敏感配置：绝不提交 ----------
+/src/main/resources/application.yml
+/src/main/resources/application-local.yml
+/src/main/resources/application-dev.yml
+/src/main/resources/application-prod.yml
+/src/main/resources/bat/
+
+# 环境变量文件（保留 .env.example 作为模板）
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# 密钥 / 证书
+*.pem
+*.key
+*.p12
+*.jks
+
+# 用户生成的业务产物
+/tmp/code_output/
+/tmp/code_deploy/
+
+# Git 历史备份目录（重建仓库时的临时产物，绝不提交）
+/.git-backup-*/
+/.git-old-*/
