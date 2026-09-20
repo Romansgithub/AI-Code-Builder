@@ -14,9 +14,11 @@ import com.quan.aicodehelper.model.enums.UserRoleEnum;
 import com.quan.aicodehelper.model.vo.LoginUserVO;
 import com.quan.aicodehelper.model.vo.UserVO;
 import com.quan.aicodehelper.service.UserService;
+import com.quan.aicodehelper.utils.PasswordUtils;
+import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.util.DigestUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,8 +31,12 @@ import static com.quan.aicodehelper.constant.UserConstant.USER_LOGIN_STATE;
  *
  * @author <a href="https://github.com/romansgithub">Roman</a>
  */
+@Slf4j
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements UserService {
+
+    @Resource
+    private PasswordUtils passwordUtils;
 
     @Override
     public long userRegister(String userAccount, String userName, String userPassword, String checkPassword) {
@@ -54,8 +60,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements U
         if (count > 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "账号重复");
         }
-        // 3. 加密
-        String encryptPassword = getEncryptPassword(userPassword);
+        // 3. 加密（BCrypt）
+        String encryptPassword = passwordUtils.encode(userPassword);
         // 4. 插入数据
         User user = new User();
         user.setUserAccount(userAccount);
@@ -91,21 +97,44 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements U
         if (userPassword.length() < 8) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "密码错误");
         }
-        // 2. 加密
-        String encryptPassword = getEncryptPassword(userPassword);
-        // 查询用户是否存在
+        // 2. 按账号查出用户后校验密码（不能再用「账号+密码」联合查询：
+        //    密码已是加盐哈希，同一明文每次结果不同，无法参与等值比较）
         QueryWrapper queryWrapper = new QueryWrapper();
         queryWrapper.eq("userAccount", userAccount);
-        queryWrapper.eq("userPassword", encryptPassword);
         User user = this.mapper.selectOneByQuery(queryWrapper);
-        // 用户不存在
-        if (user == null) {
+        // 用户不存在，或密码不匹配（兼容历史 MD5 与新 BCrypt 两种格式）
+        if (user == null || !passwordUtils.matches(userPassword, user.getUserPassword())) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户不存在或密码错误");
         }
-        // 3. 记录用户的登录态
+        // 3. 渐进式升级：若该用户密码仍是旧的 MD5 格式，登录成功后自动改写为 BCrypt
+        upgradePasswordIfNeeded(user, userPassword);
+        // 4. 记录用户的登录态
         request.getSession().setAttribute(USER_LOGIN_STATE, user);
-        // 4. 获得脱敏后的用户信息
+        // 5. 获得脱敏后的用户信息
         return this.getLoginUserVO(user);
+    }
+
+    /**
+     * 若用户密码仍为历史 MD5 格式，则在登录成功后自动升级为 BCrypt。
+     *
+     * <p>升级失败不影响本次登录 —— 密码格式迁移属于优化项，
+     * 不应让用户因为迁移异常而无法登录。</p>
+     */
+    private void upgradePasswordIfNeeded(User user, String rawPassword) {
+        if (!passwordUtils.needsUpgrade(user.getUserPassword())) {
+            return;
+        }
+        try {
+            User update = new User();
+            update.setId(user.getId());
+            update.setUserPassword(passwordUtils.encode(rawPassword));
+            if (this.updateById(update)) {
+                user.setUserPassword(update.getUserPassword());
+                log.info("用户 {} 的密码已从 MD5 升级为 BCrypt", user.getId());
+            }
+        } catch (Exception e) {
+            log.warn("用户 {} 密码升级失败，本次登录不受影响：{}", user.getId(), e.getMessage());
+        }
     }
 
     @Override
@@ -139,9 +168,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements U
 
     @Override
     public String getEncryptPassword(String userPassword) {
-        // 盐值，混淆密码
-        final String SALT = "quan";
-        return DigestUtils.md5DigestAsHex((SALT + userPassword).getBytes());
+        return passwordUtils.encode(userPassword);
     }
 
     @Override
@@ -177,8 +204,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements U
         return QueryWrapper.create()
                 .eq("id", id)
                 .eq("userRole", userRole)
-                .like("userAccount", userName)
-                .like("userName", userProfile)
+                .like("userAccount", userAccount)
+                .like("userName", userName)
                 .like("userProfile", userProfile)
                 .orderBy(sortField, "ascend".equals(sortOrder));
     }
