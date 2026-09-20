@@ -4,12 +4,17 @@ import cn.hutool.core.bean.DynaBean;
 import cn.hutool.extra.spring.SpringUtil;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.quan.aicodehelper.ai.config.ReasoningStreamingChatModelConfig;
+import com.quan.aicodehelper.ai.config.StreamingChatModelConfig;
+import com.quan.aicodehelper.ai.fallback.FallbackModelProvider;
+import com.quan.aicodehelper.ai.fallback.FallbackStreamingChatModel;
 import com.quan.aicodehelper.ai.guardrail.PromptSafetyInputGuardrail;
 import com.quan.aicodehelper.ai.guardrail.RetryOutputGuardrail;
 import com.quan.aicodehelper.ai.service.AiCodeGeneratorService;
 import com.quan.aicodehelper.ai.tools.FileWriteTool;
 import com.quan.aicodehelper.ai.tools.GenerationProgressRegistry;
 import com.quan.aicodehelper.ai.tools.ToolManager;
+import com.quan.aicodehelper.config.ModelFallbackProperties;
 import com.quan.aicodehelper.exception.BusinessException;
 import com.quan.aicodehelper.exception.ErrorCode;
 import com.quan.aicodehelper.model.enums.CodeGenTypeEnum;
@@ -43,6 +48,16 @@ public class AiCodeGeneratorServiceFactory {
     private ChatHistoryService chatHistoryService;
     @Resource
     private ToolManager toolManager;
+    @Resource
+    private FallbackModelProvider fallbackModelProvider;
+    @Resource
+    private StreamingChatModelConfig streamingChatModelConfig;
+    @Resource
+    private ReasoningStreamingChatModelConfig reasoningStreamingChatModelConfig;
+    @Resource
+    private ModelFallbackProperties modelFallbackProperties;
+    @Resource
+    private GenerationProgressRegistry generationProgressRegistry;
 
     /**
      * 创建 AI 代码生成服务实例
@@ -55,8 +70,19 @@ public class AiCodeGeneratorServiceFactory {
         return switch (codeGenType) {
             case VUE_PROJECT -> {
                 StreamingChatModel reasoningStreamingChatModel = SpringUtil.getBean("reasoningStreamingChatModelPrototype", StreamingChatModel.class);
+                // 包一层降级：模型服务抖动时自动切备用模型，不必让整次生成白费
+                StreamingChatModel withFallback = fallbackModelProvider.wrapWithFallback(
+                        reasoningStreamingChatModel,
+                        reasoningStreamingChatModelConfig.getModelName(),
+                        reasoningStreamingChatModelConfig.getBaseUrl(),
+                        reasoningStreamingChatModelConfig.getApiKey(),
+                        reasoningStreamingChatModelConfig.getMaxTokens(),
+                        reasoningStreamingChatModelConfig.getTemperature(),
+                        reasoningStreamingChatModelConfig.isLogRequests(),
+                        reasoningStreamingChatModelConfig.isLogResponses(),
+                        event -> notifyFallback(appId, event));
                     yield AiServices.builder(AiCodeGeneratorService.class)
-                    .streamingChatModel(reasoningStreamingChatModel)
+                    .streamingChatModel(withFallback)
                     .chatMemoryProvider(memoryId -> chatMemory)
                     .tools(toolManager.getAllTools())
                     .inputGuardrails(new PromptSafetyInputGuardrail())
@@ -68,9 +94,19 @@ public class AiCodeGeneratorServiceFactory {
             }
             case HTML, MULTI_FILE -> {
                 StreamingChatModel openAiStreamingChatModel = SpringUtil.getBean("streamingChatModelPrototype", StreamingChatModel.class);
+                StreamingChatModel withFallback = fallbackModelProvider.wrapWithFallback(
+                        openAiStreamingChatModel,
+                        streamingChatModelConfig.getModelName(),
+                        streamingChatModelConfig.getBaseUrl(),
+                        streamingChatModelConfig.getApiKey(),
+                        streamingChatModelConfig.getMaxTokens(),
+                        streamingChatModelConfig.getTemperature(),
+                        streamingChatModelConfig.isLogRequests(),
+                        streamingChatModelConfig.isLogResponses(),
+                        event -> notifyFallback(appId, event));
                 yield AiServices.builder(AiCodeGeneratorService.class)
                     .chatModel(chatModel)
-                    .streamingChatModel(openAiStreamingChatModel)
+                    .streamingChatModel(withFallback)
                     .chatMemoryProvider(memoryId -> chatMemory)
                     .inputGuardrails(new PromptSafetyInputGuardrail())
 //                    .outputGuardrails(new RetryOutputGuardrail())
@@ -79,6 +115,23 @@ public class AiCodeGeneratorServiceFactory {
             default -> throw new BusinessException(ErrorCode.SYSTEM_ERROR, "不支持的代码生成类型:{}" + codeGenType.getValue());
 
         };
+    }
+
+    /**
+     * 降级发生时通知用户与日志。
+     *
+     * <p>为什么要把降级告诉用户：备用模型往往档位更低，输出质量可能与预期不同。
+     * 静默降级会让用户困惑于「为什么这次生成得不一样」，甚至误判为模型变笨了。
+     * 明说「已切换到备用模型」既是知情权，也是排查线索。</p>
+     */
+    private void notifyFallback(long appId, FallbackStreamingChatModel.FallbackEvent event) {
+        log.warn("应用 {} 触发模型降级：{} → {}（原因：{}）",
+                appId, event.fromModel(), event.toModel(), event.reason());
+        if (modelFallbackProperties.isNotifyUser()) {
+            generationProgressRegistry.emit(appId,
+                    String.format("模型服务异常（%s），已自动切换到备用模型 %s",
+                            event.reason(), event.toModel()));
+        }
     }
 
 
