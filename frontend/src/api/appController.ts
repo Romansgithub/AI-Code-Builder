@@ -71,13 +71,39 @@ export async function updateAppByAdmin(
   })
 }
 
-/** 此处后端没有提供注释 GET /app/chat/gen/code */
-export async function chatToGenCode(
-  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
-  params: API.chatToGenCodeParams,
+/**
+ * 发起代码生成（POST）。
+ *
+ * <p>只负责「把任务启动起来」并返回回执，不承载进度流 ——
+ * 进度由 GET /app/chat/gen/stream 独立订阅。这样连接断开不会波及生成，
+ * 浏览器也不会像对待 GET 那样自动重放这个写请求。</p>
+ */
+export async function generateCode(
+  body: API.GenerateCodeRequest,
   options?: { [key: string]: any }
 ) {
-  return request<API.ServerSentEventString[]>('/app/chat/gen/code', {
+  return request<API.BaseResponseGenerateCodeVO>('/app/chat/gen/code', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  })
+}
+
+/**
+ * 查询生成任务状态。
+ *
+ * <p>用于页面刷新后恢复现场：刷新会丢掉 lastEventId 与内存里的进度，
+ * 只能先问一句「这个应用现在到底在不在生成」，
+ * 避免用户在不知情的情况下再点一次、误触第二次生成。</p>
+ */
+export async function getGenStatus(
+  params: { appId: number },
+  options?: { [key: string]: any }
+) {
+  return request<API.BaseResponseGenerateCodeStatusVO>('/app/chat/gen/status', {
     method: 'GET',
     params: {
       ...params,

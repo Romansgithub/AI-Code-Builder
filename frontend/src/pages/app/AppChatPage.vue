@@ -240,6 +240,7 @@ import DeploySuccessModal from '@/components/DeploySuccessModal.vue'
 import AiAvatar from '@/components/AiAvatar.vue'
 import { API_BASE_URL, getStaticPreviewUrl } from '@/config/env'
 import { VisualEditor, type ElementInfo } from '@/utils/visualEditor'
+import { consumeSseStream } from '@/utils/sseStream'
 
 import {
   CloudUploadOutlined,
@@ -488,40 +489,67 @@ const sendMessage = async () => {
   await generateCode(message, aiMessageIndex)
 }
 
-// 生成代码 - 使用 EventSource 处理流式响应
+/** 当前生成流的取消句柄。组件卸载或用户中断时用它主动断开 */
+let streamAbort: AbortController | null = null
+
+/** 已收到的事件序号，重连时作为 Last-Event-ID 上报，实现断点续传 */
+let lastEventId = 0
+
+/** 重连次数上限。超过就不再重试，避免无限重连掩盖真实故障 */
+const MAX_RECONNECT_ATTEMPTS = 5
+
+/**
+ * 生成代码。
+ *
+ * <p><b>与旧实现的关键差别</b>：旧版把「触发生成」和「接收进度」合并在一个
+ * EventSource 长连接里，导致浏览器断线后自动重放请求时，服务端会把代码再生成一遍。
+ * 现在拆成两步 —— 先 POST 触发（写操作，浏览器不会自动重放），
+ * 再 GET 订阅进度（读操作，重复订阅只是多听一遍）。</p>
+ *
+ * <p>断线后由本函数显式重连，并带上 {@code lastEventId} 续传，
+ * 服务端会把断线期间错过的进度补齐。</p>
+ */
 const generateCode = async (userMessage: string, aiMessageIndex: number) => {
-  let eventSource: EventSource | null = null
   let streamCompleted = false
+  let reconnectAttempts = 0
 
-  try {
-    // 获取 axios 配置的 baseURL
-    const baseURL = request.defaults.baseURL || API_BASE_URL
+  // 重置续传起点：这是一次全新的生成，从 0 开始收事件
+  lastEventId = 0
 
-    // 构建URL参数
-    const params = new URLSearchParams({
-      appId: appId.value || '',
-      message: userMessage,
-    })
+  // 获取 axios 配置的 baseURL
+  const baseURL = request.defaults.baseURL || API_BASE_URL
 
-    const url = `${baseURL}/app/chat/gen/code?${params}`
+  const markDone = async () => {
+    streamCompleted = true
+    isGenerating.value = false
+    streamAbort = null
+    // 延迟更新预览，确保后端已完成落盘
+    setTimeout(async () => {
+      await fetchAppInfo()
+      updatePreview()
+    }, 1000)
+  }
 
-    // 创建 EventSource 连接
-    eventSource = new EventSource(url, {
-      withCredentials: true,
-    })
+  /** 明确失败：展示原因并停止重连 */
+  const failWith = (errorMessage: string) => {
+    streamCompleted = true
+    isGenerating.value = false
+    streamAbort = null
+    messages.value[aiMessageIndex].content = `❌ ${errorMessage}`
+    messages.value[aiMessageIndex].loading = false
+    message.error(errorMessage)
+  }
 
-    let fullContent = ''
+  let fullContent = ''
 
-    // 处理接收到的消息
-    eventSource.onmessage = function (event) {
-      if (streamCompleted) return
+  const handleMessage = (event: string, data: string) => {
+    if (streamCompleted) return
 
+    if (event === 'message') {
+      // 正文增量。它没有事件名，直接拼接即可
       try {
-        // 解析JSON包装的数据
-        const parsed = JSON.parse(event.data)
+        const parsed = JSON.parse(data)
         const content = parsed.d
-
-        // 拼接内容
         if (content !== undefined && content !== null) {
           fullContent += content
           messages.value[aiMessageIndex].content = fullContent
@@ -529,107 +557,118 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
           scrollToBottom()
         }
       } catch (error) {
-        console.error('解析消息失败:', error)
-        handleError(error, aiMessageIndex)
+        console.warn('解析消息失败:', error, data)
       }
+      return
     }
 
-    // 处理progress事件（工具执行进度，如文件写入）
-    eventSource.addEventListener('progress', function (event: MessageEvent) {
-      if (streamCompleted) return
+    if (event === 'progress') {
+      // 进度事件形如 {"d":"正在构建项目..."}，进入气泡下方的进度列表
       try {
-        const parsed = JSON.parse(event.data)
+        const parsed = JSON.parse(data)
         if (parsed.d) {
           const msg = messages.value[aiMessageIndex]
-          if (!msg.progress) {
-            msg.progress = []
-          }
+          if (!msg.progress) msg.progress = []
           msg.progress.push(parsed.d)
           scrollToBottom()
         }
       } catch (e) {
         console.warn('解析进度事件失败:', e)
       }
-    })
+      return
+    }
 
-    // 处理error事件（后端流内错误）
-    // 注意：EventSource 连接层错误也会触发名为 error 的事件但没有 data，
-    // 那种情况交给下方 onerror 处理，这里只处理服务端主动发送的错误
-    eventSource.addEventListener('error', function (event) {
-      if (streamCompleted) return
-      if (!(event instanceof MessageEvent) || !event.data) return
-      try {
-        const errorData = JSON.parse(event.data)
-        const errorMessage = errorData.error || '生成过程中出现错误'
-        messages.value[aiMessageIndex].content = `❌ ${errorMessage}`
-        messages.value[aiMessageIndex].loading = false
-        message.error(errorMessage)
-
-        streamCompleted = true
-        isGenerating.value = false
-        eventSource?.close()
-      } catch (parseError) {
-        console.warn('解析错误事件失败:', parseError, '原始数据:', event.data)
-      }
-    })
-
-    // 处理done事件
-    eventSource.addEventListener('done', function () {
-      if (streamCompleted) return
-
+    if (event === 'done') {
       streamCompleted = true
-      isGenerating.value = false
-      eventSource?.close()
+      markDone()
+      return
+    }
 
-      // 延迟更新预览，确保后端已完成处理
-      setTimeout(async () => {
-        await fetchAppInfo()
-        updatePreview()
-      }, 1000)
-    })
-
-    // 处理business-error事件（后端限流等错误）
-    eventSource.addEventListener('business-error', function (event: MessageEvent) {
-      if (streamCompleted) return
-
+    // error：生成过程中失败（后端流内异常）
+    if (event === 'error') {
+      let errorMessage = '生成过程中出现错误'
       try {
-        const errorData = JSON.parse(event.data)
-        console.error('SSE业务错误事件:', errorData)
-
-        // 显示具体的错误信息
-        const errorMessage = errorData.message || '生成过程中出现错误'
-        messages.value[aiMessageIndex].content = `❌ ${errorMessage}`
-        messages.value[aiMessageIndex].loading = false
-        message.error(errorMessage)
-
-        streamCompleted = true
-        isGenerating.value = false
-        eventSource?.close()
-      } catch (parseError) {
-        console.error('解析错误事件失败:', parseError, '原始数据:', event.data)
-        handleError(new Error('服务器返回错误'), aiMessageIndex)
+        errorMessage = JSON.parse(data).error || errorMessage
+      } catch (e) {
+        console.warn('解析错误事件失败:', e, data)
       }
-    })
+      failWith(errorMessage)
+      return
+    }
 
-    // 处理错误
-    eventSource.onerror = function () {
-      if (streamCompleted || !isGenerating.value) return
-      // 检查是否是正常的连接关闭
-      if (eventSource?.readyState === EventSource.CONNECTING) {
-        streamCompleted = true
-        isGenerating.value = false
-        eventSource?.close()
-
-        setTimeout(async () => {
-          await fetchAppInfo()
-          updatePreview()
-        }, 1000)
-      } else {
-        handleError(new Error('SSE连接错误'), aiMessageIndex)
+    // business-error：请求本身被拒绝（无权限、无任务、限流等）
+    if (event === 'business-error') {
+      let errorMessage = '生成过程中出现错误'
+      try {
+        errorMessage = JSON.parse(data).message || errorMessage
+      } catch (e) {
+        console.warn('解析业务错误事件失败:', e, data)
       }
+      failWith(errorMessage)
+    }
+  }
+
+  try {
+    // ---- 第一步：触发生成 ----
+    // 用 POST：写操作必须让浏览器知道「这不是可以随便重放的请求」
+    const triggerResponse = await request<API.BaseResponseGenerateCodeVO>(
+      '/app/chat/gen/code',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        data: { appId: appId.value, message: userMessage },
+      },
+    )
+
+    const receipt = triggerResponse.data?.data
+    if (receipt?.reused) {
+      // 命中已有任务：说明这个应用正在生成，本次请求接续到那次任务上，
+      // 而不是又起了一次。明确告诉用户，避免他以为自己点了两遍
+      message.info('检测到该应用正在生成，已为你接续当前进度')
+    }
+
+    // ---- 第二步：订阅进度，断线自动续传 ----
+    while (!streamCompleted && reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+      streamAbort = new AbortController()
+
+      const url = `${baseURL}/app/chat/gen/stream?appId=${appId.value}`
+
+      await consumeSseStream({
+        url,
+        lastEventId,
+        signal: streamAbort.signal,
+        onMessage: (msg) => {
+          // 记录序号用于续传。服务端只有在有 id 时才会带上，
+          // done 之类的收尾事件可能没有 id，此时不能把起点改小
+          if (msg.id) {
+            const parsed = Number(msg.id)
+            if (!Number.isNaN(parsed) && parsed > lastEventId) {
+              lastEventId = parsed
+            }
+          }
+          handleMessage(msg.event, msg.data)
+        },
+        onTransportError: (error) => {
+          console.warn('进度流连接中断：', error)
+        },
+      })
+
+      if (streamCompleted) break
+
+      // 连接结束但没收到 done/error：属于网络中断，值得重连
+      reconnectAttempts += 1
+      if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+        failWith('连接多次中断，请刷新页面查看生成结果')
+        break
+      }
+
+      // 递增退避：避免服务端刚重启就被连着打
+      const delay = Math.min(1000 * reconnectAttempts, 5000)
+      message.info(`进度连接中断，正在重连（${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}）...`)
+      await new Promise((resolve) => setTimeout(resolve, delay))
     }
   } catch (error) {
-    console.error('创建 EventSource 失败：', error)
+    console.error('发起生成失败：', error)
     handleError(error, aiMessageIndex)
   }
 }
@@ -818,7 +857,11 @@ onMounted(() => {
 
 // 清理资源
 onUnmounted(() => {
-  // EventSource 会在组件卸载时自动清理
+  // 必须显式断开：原生 EventSource 时代「组件卸载会自动清理」其实是个误解 ——
+  // 连接一直挂着，后端那条流也会继续跑，继续烧 token。
+  // 现在用 AbortController 主动终止，语义明确且可测。
+  streamAbort?.abort()
+  streamAbort = null
 })
 </script>
 

@@ -209,6 +209,42 @@ declare namespace API {
 
   type ServerSentEventString = true
 
+  /** 发起生成的请求体：写操作走 POST body，消息不再受 URL 长度限制 */
+  type GenerateCodeRequest = {
+    appId: number
+    message: string
+  }
+
+  /** 发起生成的受理回执。reused 为 true 表示接续了该应用上已有的生成任务 */
+  type GenerateCodeVO = {
+    appId?: number
+    status?: string
+    statusDescription?: string
+    reused?: boolean
+  }
+
+  type BaseResponseGenerateCodeVO = {
+    code?: number
+    data?: GenerateCodeVO
+    message?: string
+  }
+
+  /** 生成任务状态。running 为 true 表示应去订阅进度而不是重新发起生成 */
+  type GenerateCodeStatusVO = {
+    appId?: number
+    hasTask?: boolean
+    status?: string
+    statusDescription?: string
+    running?: boolean
+    failureReason?: string
+  }
+
+  type BaseResponseGenerateCodeStatusVO = {
+    code?: number
+    data?: GenerateCodeStatusVO
+    message?: string
+  }
+
   type serveStaticResourceParams = {
     deployKey: string
   }
