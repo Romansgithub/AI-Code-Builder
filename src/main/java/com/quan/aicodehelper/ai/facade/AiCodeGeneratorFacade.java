@@ -43,7 +43,7 @@ public class AiCodeGeneratorFacade {
         }).doOnComplete(() -> {
             if (codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT)
             {
-                String projectPath = AppConstant.CODE_OUTPUT_ROOT_DIR + File.separator + codeGenTypeEnum.getValue() + "_" +appId;
+                String projectPath = AppConstant.getCodeOutputRootDir() + File.separator + codeGenTypeEnum.getValue() + "_" +appId;
                 vueProjectBuilder.buildProjectAsync(projectPath);
                 return;
             }

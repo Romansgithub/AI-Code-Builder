@@ -36,7 +36,7 @@ public class FileModifyTool extends BaseTool {
             Path path = Paths.get(relativeFilePath);
             if (!path.isAbsolute()) {
                 String projectDirName = "vue_project_" + appId;
-                Path projectRoot = Paths.get(AppConstant.CODE_OUTPUT_ROOT_DIR, projectDirName);
+                Path projectRoot = Paths.get(AppConstant.getCodeOutputRootDir(), projectDirName);
                 path = projectRoot.resolve(relativeFilePath);
             }
             if (!Files.exists(path) || !Files.isRegularFile(path)) {

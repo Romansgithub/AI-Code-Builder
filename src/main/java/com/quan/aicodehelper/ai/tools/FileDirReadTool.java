@@ -48,7 +48,7 @@ public class FileDirReadTool extends BaseTool{
             Path path = Paths.get(relativeDirPath == null ? "" : relativeDirPath);
             if (!path.isAbsolute()) {
                 String projectDirName = "vue_project_" + appId;
-                Path projectRoot = Paths.get(AppConstant.CODE_OUTPUT_ROOT_DIR, projectDirName);
+                Path projectRoot = Paths.get(AppConstant.getCodeOutputRootDir(), projectDirName);
                 path = projectRoot.resolve(relativeDirPath == null ? "" : relativeDirPath);
             }
             File targetDir = path.toFile();

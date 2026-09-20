@@ -23,7 +23,16 @@ import java.nio.charset.StandardCharsets;
 @RestController
 @RequestMapping("/static")
 public class StaticResourceController {
-    private static final String PREVIEW_ROOT_DIR = AppConstant.CODE_OUTPUT_ROOT_DIR;
+
+    /**
+     * 预览根目录。
+     *
+     * <p>不做成 static final：路径由 StorageProperties 在启动时回填，
+     * 类加载期固化会导致注入的配置失效（同时也不利于单测替换）。</p>
+     */
+    private String previewRootDir() {
+        return AppConstant.getCodeOutputRootDir();
+    }
 
     @GetMapping("/{deployKey}/**")
     public ResponseEntity<Resource> serveStaticResource(@PathVariable String deployKey, HttpServletRequest request){
@@ -39,10 +48,11 @@ public class StaticResourceController {
             {
                 resourcePath = "/index.html";
             }
-            String filePath = PREVIEW_ROOT_DIR + "/" + deployKey + resourcePath;
+            String rootDir = previewRootDir();
+            String filePath = rootDir + "/" + deployKey + resourcePath;
             File file = new File(filePath);
-            File rootDir = new File(PREVIEW_ROOT_DIR).getCanonicalFile();
-            if (!file.getCanonicalPath().startsWith(rootDir.getCanonicalPath() + File.separator))
+            File canonicalRoot = new File(rootDir).getCanonicalFile();
+            if (!file.getCanonicalPath().startsWith(canonicalRoot.getCanonicalPath() + File.separator))
             {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
             }
@@ -87,13 +97,70 @@ public class StaticResourceController {
         return uri.substring(keyIndex + deployKey.length());
     }
 
-    private String getContentTypeWithCharset(String filePath) {
-        if (filePath.endsWith(".html")) return "text/html; charset=UTF-8";
-        if (filePath.endsWith(".css")) return "text/css; charset=UTF-8";
-        if (filePath.endsWith(".js")) return "application/javascript; charset=UTF-8";
-        if (filePath.endsWith(".png")) return "image/png";
-        if (filePath.endsWith(".jpg")) return "image/jpeg";
-        return "application/octet-stream";
-
+    /**
+     * 根据扩展名返回 Content-Type。
+     *
+     * <p>历史问题：早期只覆盖 html/css/js/png/jpg，其余一律 application/octet-stream。
+     * Vue 构建产物里的 {@code .svg}、{@code .woff2}、{@code .json} 等一旦被标为
+     * octet-stream，浏览器会拒绝按类型加载（字体不显示、SVG 挂图），必须补全。</p>
+     *
+     * <p>文本类统一声明 charset=UTF-8，避免中文页面乱码。</p>
+     */
+    String getContentTypeWithCharset(String filePath) {
+        String lower = filePath.toLowerCase();
+        int dot = lower.lastIndexOf('.');
+        String ext = dot < 0 ? "" : lower.substring(dot);
+        switch (ext) {
+            case ".html":
+            case ".htm":
+                return "text/html; charset=UTF-8";
+            case ".css":
+                return "text/css; charset=UTF-8";
+            case ".js":
+            case ".mjs":
+                return "application/javascript; charset=UTF-8";
+            case ".json":
+                return "application/json; charset=UTF-8";
+            case ".txt":
+            case ".md":
+                return "text/plain; charset=UTF-8";
+            case ".xml":
+                return "application/xml; charset=UTF-8";
+            case ".svg":
+                return "image/svg+xml; charset=UTF-8";
+            case ".png":
+                return "image/png";
+            case ".jpg":
+            case ".jpeg":
+                return "image/jpeg";
+            case ".gif":
+                return "image/gif";
+            case ".webp":
+                return "image/webp";
+            case ".ico":
+                return "image/x-icon";
+            case ".woff":
+                return "font/woff";
+            case ".woff2":
+                return "font/woff2";
+            case ".ttf":
+                return "font/ttf";
+            case ".otf":
+                return "font/otf";
+            case ".eot":
+                return "application/vnd.ms-fontobject";
+            case ".mp4":
+                return "video/mp4";
+            case ".webm":
+                return "video/webm";
+            case ".mp3":
+                return "audio/mpeg";
+            case ".wasm":
+                return "application/wasm";
+            case ".map":
+                return "application/json; charset=UTF-8";
+            default:
+                return "application/octet-stream";
+        }
     }
 }

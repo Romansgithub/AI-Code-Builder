@@ -11,6 +11,7 @@ import com.quan.aicodehelper.ai.config.AiCodeGenTypeRoutingConfig;
 import com.quan.aicodehelper.ai.config.RoutingAiModelConfig;
 import com.quan.aicodehelper.ai.service.AiCodeGenTypeRoutingService;
 import com.quan.aicodehelper.constant.AppConstant;
+import com.quan.aicodehelper.config.StorageProperties;
 import com.quan.aicodehelper.core.builder.VueProjectBuilder;
 import com.quan.aicodehelper.exception.BusinessException;
 import com.quan.aicodehelper.exception.ErrorCode;
@@ -67,6 +68,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     private ScreenshotServiceImpl screenshotServiceImpl;
     @Resource
     private AiCodeGenTypeRoutingConfig aiCodeGenTypeRoutingConfig;
+
+    /**
+     * 存储与部署配置。部署访问地址由它统一拼接，避免 host 硬编码漏端口 / 漏 context-path。
+     */
+    @Resource
+    private StorageProperties storageProperties;
 
     @Override
     public QueryWrapper getQueryWrapper(AppQueryRequest appQueryRequest) {
@@ -210,7 +217,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
         String codeGenType = app.getCodeGenType();
         String sourceDirName = codeGenType + "_" + appId;
-        String sourceDirPath = AppConstant.CODE_OUTPUT_ROOT_DIR + File.separator + sourceDirName;
+        String sourceDirPath = AppConstant.getCodeOutputRootDir() + File.separator + sourceDirName;
         File sourceDir = new File(sourceDirPath);
         if (!sourceDir.exists() || !sourceDir.isDirectory()){
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "应用代码不存在，请先生成代码");
@@ -221,14 +228,18 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             boolean buildSuccess = vueProjectBuilder.buildProject(sourceDirPath);
             ThrowUtils.throwIf(!buildSuccess, ErrorCode.SYSTEM_ERROR,"Vue项目构建失败，请检查构建日志");
         }
-        String deployDirPath = AppConstant.CODE_DEPLOY_ROOT_DIR + File.separator + deployKey;
+        String deployDirPath = AppConstant.getCodeDeployRootDir() + File.separator + deployKey;
         try{
             File deploySourceDir = isVueProject ? new File(sourceDirPath, "dist") : sourceDir;
             if (isVueProject && !new File(deploySourceDir, "index.html").exists())
             {
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR, "构建产物 dist 不存在，请先完成 Vue 项目构建");
             }
-            FileUtil.copyContent(deploySourceDir, new File(deployDirPath), true);
+            // 先清空部署目录再拷贝：copyContent 是「按文件覆盖」，源目录里已删除的文件
+            // 会残留在部署目录中（如改名后的旧 chunk），表现为「重新部署了但页面还是旧的」。
+            File deployTarget = new File(deployDirPath);
+            FileUtil.clean(deployTarget);
+            FileUtil.copyContent(deploySourceDir, deployTarget, true);
         }catch (Exception e)
         {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "部署失败:" + e.getMessage());
@@ -240,7 +251,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         updateApp.setDeployedTime(java.time.LocalDateTime.now());
         boolean result = this.updateById(updateApp);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR, "更新应用部署信息失败");
-        String appDeployUrl = String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+        // 部署访问地址统一由 StorageProperties 拼接，始终带尾斜杠 —— 预览页 index.html 用的是
+        // 相对路径 "./assets/xxx"，缺少尾斜杠时浏览器会把 deployKey 当文件名，静态资源全部 404。
+        String appDeployUrl = storageProperties.buildDeployUrl(deployKey);
         generateAppScreenshotAsync(appId, appDeployUrl);
         return appDeployUrl;
     }

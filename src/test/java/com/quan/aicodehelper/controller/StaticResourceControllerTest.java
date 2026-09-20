@@ -54,7 +54,7 @@ class StaticResourceControllerTest {
 
     @BeforeAll
     static void setUpPreviewFiles() throws Exception {
-        previewDir = Path.of(AppConstant.CODE_OUTPUT_ROOT_DIR, DEPLOY_KEY);
+        previewDir = Path.of(AppConstant.getCodeOutputRootDir(), DEPLOY_KEY);
         Files.createDirectories(Path.of(previewDir.toString(), "assets"));
 
         Files.writeString(Path.of(previewDir.toString(), "index.html"),
@@ -66,7 +66,7 @@ class StaticResourceControllerTest {
 
         // 越权目标放在预览根目录的上一级（tmp/ 下），
         // 而不是根目录内 —— 放在根目录内属于合法可访问范围，测不出穿越防护
-        outsideDir = Path.of(AppConstant.CODE_OUTPUT_ROOT_DIR).getParent();
+        outsideDir = Path.of(AppConstant.getCodeOutputRootDir()).getParent();
         outsideFile = Path.of(outsideDir.toString(), "outside-secret-for-test.txt");
         Files.writeString(outsideFile, "should-not-be-served", StandardCharsets.UTF_8);
     }
@@ -297,6 +297,48 @@ class StaticResourceControllerTest {
                 new StaticResourceController().serveStaticResource(DEPLOY_KEY, requestWithUri("/static/" + DEPLOY_KEY + "/style.css"));
         assertThat(resp.getHeaders().getContentType()).isNotNull();
         assertThat(resp.getHeaders().getContentType().toString()).startsWith("text/css");
+    }
+
+    @Nested
+    @DisplayName("Content-Type 映射（Vue 构建产物必需类型）")
+    class ContentTypeMapping {
+
+        /**
+         * 历史问题：早期只覆盖 html/css/js/png/jpg，其余一律 application/octet-stream。
+         * Vue 构建产物带的 svg/woff2/json 一旦被标为 octet-stream，浏览器会拒绝按类型加载，
+         * 表现为字体不生效、SVG 图挂掉、sourcemap 报错。
+         */
+        @Test
+        @DisplayName("构建产物常见资源类型必须被正确识别")
+        void shouldMapAssetTypes() {
+            StaticResourceController c = new StaticResourceController();
+            assertThat(c.getContentTypeWithCharset("/a/index.html")).startsWith("text/html");
+            assertThat(c.getContentTypeWithCharset("/a/assets/index-abc.js")).startsWith("application/javascript");
+            assertThat(c.getContentTypeWithCharset("/a/assets/index-abc.css")).startsWith("text/css");
+            assertThat(c.getContentTypeWithCharset("/a/logo.svg")).isEqualTo("image/svg+xml; charset=UTF-8");
+            assertThat(c.getContentTypeWithCharset("/a/font.woff2")).isEqualTo("font/woff2");
+            assertThat(c.getContentTypeWithCharset("/a/font.woff")).isEqualTo("font/woff");
+            assertThat(c.getContentTypeWithCharset("/a/data.json")).startsWith("application/json");
+            assertThat(c.getContentTypeWithCharset("/a/app.js.map")).startsWith("application/json");
+            assertThat(c.getContentTypeWithCharset("/a/favicon.ico")).isEqualTo("image/x-icon");
+            assertThat(c.getContentTypeWithCharset("/a/pic.webp")).isEqualTo("image/webp");
+        }
+
+        @Test
+        @DisplayName("扩展名大小写不敏感")
+        void shouldBeCaseInsensitive() {
+            StaticResourceController c = new StaticResourceController();
+            assertThat(c.getContentTypeWithCharset("/a/LOGO.SVG")).isEqualTo("image/svg+xml; charset=UTF-8");
+            assertThat(c.getContentTypeWithCharset("/a/INDEX.HTML")).startsWith("text/html");
+        }
+
+        @Test
+        @DisplayName("未知扩展名回退为 octet-stream，不得抛异常")
+        void shouldFallbackForUnknown() {
+            StaticResourceController c = new StaticResourceController();
+            assertThat(c.getContentTypeWithCharset("/a/file.unknownext")).isEqualTo("application/octet-stream");
+            assertThat(c.getContentTypeWithCharset("/a/noextension")).isEqualTo("application/octet-stream");
+        }
     }
 
     private MockHttpServletRequest requestWithUri(String uri) {

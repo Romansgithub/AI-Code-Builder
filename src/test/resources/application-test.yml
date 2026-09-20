@@ -1,0 +1,51 @@
+# 测试专用配置
+#
+# 目的：让 `mvn test` 在「不配置任何环境变量」的干净环境（含 CI）中也能跑通。
+# 这里全部使用假值 —— 集成测试不应触达真实数据库、Redis、LLM 与对象存储。
+# 真实密钥只存在于本地 IDE 的运行配置或部署环境的环境变量中。
+app:
+  storage:
+    # 指定到 target 下，避免测试产物污染项目根目录的 tmp/
+    code-output-dir: ${APP_STORAGE_CODE_OUTPUT_DIR:target/test-tmp/code_output}
+    code-deploy-dir: ${APP_STORAGE_CODE_DEPLOY_DIR:target/test-tmp/code_deploy}
+    deploy-host: ${APP_STORAGE_DEPLOY_HOST:http://localhost:8080/api/static/}
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/ai_code_helper_test?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: test
+    password: test
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: ""
+      ttl: 3600
+
+langchain4j:
+  open-ai:
+    streaming-chat-model:
+      base-url: http://localhost:1/v1
+      api-key: test-key-not-real
+      model-name: test-model
+    chat-model:
+      base-url: http://localhost:1/v1
+      api-key: test-key-not-real
+      model-name: test-model
+    reasoning-streaming-chat-model:
+      base-url: http://localhost:1/v1
+      api-key: test-key-not-real
+      model-name: test-model
+    routing-chat-model:
+      base-url: http://localhost:1/v1
+      api-key: test-key-not-real
+      model-name: test-model
+
+cos:
+  client:
+    host: https://example.cos.ap-shanghai.myqcloud.com
+    secretId: test-secret-id
+    secretKey: test-secret-key
+    region: ap-shanghai
+    bucket: test-bucket-0000000000

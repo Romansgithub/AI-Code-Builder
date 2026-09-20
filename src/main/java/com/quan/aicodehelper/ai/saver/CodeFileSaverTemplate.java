@@ -12,7 +12,16 @@ import java.io.File;
 import java.util.zip.Checksum;
 
 public abstract class CodeFileSaverTemplate<T> {
-    private static final String FILE_SAVE_ROOT_DIR = AppConstant.CODE_OUTPUT_ROOT_DIR;
+
+    /**
+     * 文件保存根目录。
+     *
+     * <p>刻意不做成 {@code static final} 字段：路径由 StorageProperties 在启动时回填，
+     * 若在类加载期就固化为常量，注入的配置将不生效。</p>
+     */
+    private static String fileSaveRootDir() {
+        return AppConstant.getCodeOutputRootDir();
+    }
 
     /**
      * 保存代码文件
@@ -44,7 +53,7 @@ public abstract class CodeFileSaverTemplate<T> {
         }
         String codeType = getCodeType().getValue();
         String uniqueDirName = StrUtil.format("{}_{}", codeType, appId);
-        String dirPath = FILE_SAVE_ROOT_DIR + File.separator + uniqueDirName;
+        String dirPath = fileSaveRootDir() + File.separator + uniqueDirName;
         FileUtil.mkdir(dirPath);
         return dirPath;
     }

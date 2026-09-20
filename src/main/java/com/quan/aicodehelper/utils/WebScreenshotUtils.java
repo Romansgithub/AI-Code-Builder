@@ -4,6 +4,7 @@ import cn.hutool.core.img.ImgUtil;
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
+import com.quan.aicodehelper.constant.AppConstant;
 import com.quan.aicodehelper.exception.BusinessException;
 import com.quan.aicodehelper.exception.ErrorCode;
 import io.github.bonigarcia.wdm.WebDriverManager;
@@ -142,9 +143,10 @@ public class WebScreenshotUtils {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "webUrl 为空");
         }
         try {
-            String rootPath = System.getProperty("user.dir") + File.separator + "tmp"
-                    + File.separator + "screenshots" + File.separator
-                    + UUID.randomUUID().toString().substring(0,8);
+            // 截图临时目录：与代码产物同源，统一由 AppConstant 提供根目录，
+            // 避免各处自行用 user.dir 推算导致位置不一致。
+            String rootPath = AppConstant.getCodeOutputRootDir() + File.separator + "screenshots"
+                    + File.separator + UUID.randomUUID().toString().substring(0,8);
             FileUtil.mkdir(rootPath);
             final String IMAGE_SUFFIX = ".png";
             String imageSavePath = rootPath + File.separator + RandomUtil.randomNumbers(5) + IMAGE_SUFFIX;

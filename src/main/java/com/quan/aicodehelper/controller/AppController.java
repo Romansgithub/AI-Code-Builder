@@ -354,7 +354,7 @@ public class AppController {
         }
         String codeGenType = app.getCodeGenType();
         String sourceDirName = codeGenType + "_" + appId;
-        String sourceDirPath = AppConstant.CODE_OUTPUT_ROOT_DIR + File.separator + sourceDirName;
+        String sourceDirPath = AppConstant.getCodeOutputRootDir() + File.separator + sourceDirName;
         File sourceDir = new File(sourceDirPath);
         ThrowUtils.throwIf(!sourceDir.exists() || !sourceDir.isDirectory(), ErrorCode.NOT_FOUND_ERROR, "应用代码不存在");
         String downloadFileName = String.valueOf(appId);

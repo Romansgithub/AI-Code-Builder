@@ -37,7 +37,7 @@ public class FileWriteTool extends BaseTool{
             if (!path.isAbsolute())
             {
                 String projectDirname = CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
-                Path projectRoot = Paths.get(AppConstant.CODE_OUTPUT_ROOT_DIR, projectDirname);
+                Path projectRoot = Paths.get(AppConstant.getCodeOutputRootDir(), projectDirname);
                 path = projectRoot.resolve(relativeFilePath);
             }
             Path parentDir = path.getParent();
