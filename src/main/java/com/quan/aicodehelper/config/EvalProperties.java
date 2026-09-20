@@ -38,9 +38,15 @@ public class EvalProperties {
     private int caseTimeoutSeconds = 600;
 
     /**
-     * 跑批产物目录（相对 code-output-dir）。
+     * 跑批产物子目录（相对 code-output-dir）。
      *
-     * <p>与用户真实产物隔开，避免评测产生的应用混进用户的 /app 列表。</p>
+     * <p>它与用户真实产物隔开，避免评测产生的应用混进用户的 /app 列表。</p>
+     *
+     * <p><b>实现方式</b>：跑批期间整个「产物根」会被临时切到
+     * {@code code-output-dir/{outputSubDir}}，生成侧照常按 {@code {codeType}_{appId}}
+     * 在它下面建目录。也就是说这个值只是换根，<b>不参与目录命名</b> ——
+     * 命名始终只有生产那一套，否则「写盘的」和「读盘的」就会各算各的、再次漂移
+     * （2026-09-20 评测 8 条全失败正是这么来的）。</p>
      */
     private String outputSubDir = "eval-run";
 

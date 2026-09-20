@@ -7,6 +7,7 @@ import com.quan.aicodehelper.constant.AppConstant;
 import com.quan.aicodehelper.core.budget.LlmCallGuard;
 import com.quan.aicodehelper.core.builder.BuildResult;
 import com.quan.aicodehelper.core.eval.CodeGenEvalRecorder;
+import com.quan.aicodehelper.core.eval.EvalScope;
 import com.quan.aicodehelper.core.eval.GenerationMetric;
 import com.quan.aicodehelper.core.healing.BuildSelfHealingService;
 import com.quan.aicodehelper.core.healing.HealingOutcome;
@@ -82,6 +83,12 @@ public class AiCodeGeneratorFacade {
             long generateCostMs = System.currentTimeMillis() - startedAt;
             if (codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT)
             {
+                // 评测跑批会自己对同一个目录调同步的「构建 + 自愈」以拿到结构化指标，
+                // 这里再异步跑一遍就会和它并发抢 node_modules / dist，并多写一条评测记录。
+                // 所以评测期间由调用方置起 EvalScope，此处让路。
+                if (EvalScope.isActive()) {
+                    return;
+                }
                 // Vue 工程走「异步构建 + 自动修复」：构建本身要跑 npm，耗时以分钟计，
                 // 不能阻塞 SSE 流；自愈过程中通过 GenerationProgressRegistry 推送进度，
                 // 用户能看到「正在修复（第 1/2 次）」这类实时反馈。
@@ -99,6 +106,9 @@ public class AiCodeGeneratorFacade {
      *
      * <p>HTML / 多文件类型没有构建步骤，因此「一次通过率」在这里退化为
      * 「解析与保存是否成功」—— 解析失败同样意味着这次生成对用户不可用。</p>
+     *
+     * <p>评测跑批期间只保存、不上报：{@code EvalRunner} 会带着 batchId 统一落库，
+     * 这里再记一条就变成同一用例两个 id 空间的数据混在一张表里，聚合口径会被污染。</p>
      */
     private void recordSaveOutcome(String completeCode, CodeGenTypeEnum codeGenTypeEnum,
                                    Long appId, long generateCostMs) {
@@ -114,6 +124,10 @@ public class AiCodeGeneratorFacade {
         } catch (Exception e) {
             failureMessage = e.getMessage();
             log.error("保存失败：{}", failureMessage);
+        }
+
+        if (EvalScope.isActive()) {
+            return;
         }
 
         GenerationMetric metric = GenerationMetric.builder()

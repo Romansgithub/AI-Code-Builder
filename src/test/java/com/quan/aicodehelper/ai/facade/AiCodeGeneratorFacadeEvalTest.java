@@ -8,6 +8,7 @@ import com.quan.aicodehelper.config.LlmBudgetProperties;
 import com.quan.aicodehelper.core.budget.LlmCallGuard;
 import com.quan.aicodehelper.core.builder.BuildResult;
 import com.quan.aicodehelper.core.eval.CodeGenEvalRecorder;
+import com.quan.aicodehelper.core.eval.EvalScope;
 import com.quan.aicodehelper.core.eval.GenerationMetric;
 import com.quan.aicodehelper.core.healing.BuildSelfHealingService;
 import com.quan.aicodehelper.core.healing.HealingOutcome;
@@ -379,6 +380,58 @@ class AiCodeGeneratorFacadeEvalTest {
             waitUntil(() -> org.mockito.Mockito.mockingDetails(healingService)
                     .getInvocations().stream()
                     .anyMatch(i -> "buildWithHealingOutcome".equals(i.getMethod().getName())));
+        }
+    }
+
+    @Nested
+    @DisplayName("评测跑批期间必须让路")
+    class EvalScopeYields {
+
+        @Test
+        @DisplayName("Vue 类型不应再异步构建一次，避免与评测的同步构建并发抢目录")
+        void shouldSkipAsyncBuildDuringEval() {
+            EvalScope.runInScope(() ->
+                    facade.generateCodeStream(USER_MESSAGE, CodeGenTypeEnum.VUE_PROJECT, APP_ID)
+                            .blockLast());
+
+            // 给可能被误触发的虚拟线程一点时间；若真触发了，下面的断言会失败
+            try {
+                Thread.sleep(300L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            verify(healingService, never()).buildWithHealingOutcome(anyString(), anyLong());
+        }
+
+        @Test
+        @DisplayName("HTML 类型仍应保存代码，但不再重复上报指标")
+        void shouldSaveButNotRecordDuringEval() {
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+                    .thenReturn(Flux.just(validHtmlStream()));
+
+            EvalScope.runInScope(() ->
+                    facade.generateCodeStream(USER_MESSAGE, CodeGenTypeEnum.HTML, APP_ID).blockLast());
+
+            // 代码确实落盘了 —— 评测要靠它判断「保存成功」
+            assertThat(Files.exists(outputRoot.resolve("html_" + APP_ID).resolve("index.html")))
+                    .as("评测期间保存不能被跳过，否则评测永远判 MISSING_DIST")
+                    .isTrue();
+            // 但不重复上报：EvalRunner 会带着 batchId 统一落库
+            assertThat(captured)
+                    .as("重复上报会让同一用例在评测表里出现两条，聚合口径被污染")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("非评测场景行为不变：照常上报")
+        void shouldStillRecordOutsideEval() {
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+                    .thenReturn(Flux.just(validHtmlStream()));
+
+            facade.generateCodeStream(USER_MESSAGE, CodeGenTypeEnum.HTML, APP_ID).blockLast();
+
+            assertThat(captured).hasSize(1);
         }
     }
 

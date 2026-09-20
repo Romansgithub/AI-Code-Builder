@@ -36,6 +36,19 @@ import java.util.List;
  *
  * <p><b>隔离性</b>：跑批产物写在独立的子目录下，不与用户真实产物混在一起，
  * 避免评测应用出现在用户的应用列表里。</p>
+ *
+ * <p><b>产物路径契约（重要，别再改回去）</b>：生成侧落盘目录由
+ * {@code FileWriteTool} / {@code CodeFileSaverTemplate} 按
+ * {@code {codeType}_{appId}} 拼出，这个 appId 是生成侧自己收到的那个。
+ * 评测侧只在跑批期间把 {@link AppConstant.Storage} 的产物根指向
+ * {@code code-output-dir/eval-run}，<b>然后完全复用同一套命名规则</b>去读产物。</p>
+ *
+ * <p>历史上这里踩过一个坑：评测侧曾用「用例 id」自造了第三套目录名
+ * （{@code eval-run/vue_project_vue-todo}），而生成侧实际落在
+ * {@code eval-run/vue_project_-1789915935607} —— 两条路径永远对不上，
+ * 8 条用例全被判失败，日志里却明明白白写着构建成功。
+ * <b>凡是「写盘的一方」和「读盘的一方」分别算路径，就一定会漂移。</b>
+ * 现在只有一处算路径（生产那套），评测侧只换根目录。</p>
  */
 @Slf4j
 @Service
@@ -85,12 +98,27 @@ public class EvalRunner {
                 batchId, evalSet.getName(), evalSet.getVersion(), evalSet.getCases().size());
 
         List<EvalRunResult.CaseResult> caseResults = new ArrayList<>();
-        for (EvalCase evalCase : evalSet.getCases()) {
-            EvalRunResult.CaseResult cr = runSingleCase(evalCase, batchId);
-            caseResults.add(cr);
-            log.info("用例 {} 完成：首轮={} 自愈={}轮 最终={} 耗时={}ms",
-                    evalCase.getId(), cr.isFirstBuildPassed(), cr.getHealingAttempts(),
-                    cr.isFinalPassed(), cr.getTotalCostMs());
+        // 整轮跑批期间把产物根切到 eval-run 子目录，跑完必须还原：
+        // AppConstant 是全局静态状态，不还原会让评测产物污染之后所有真实用户的生成。
+        //
+        // 关键：evalRunRoot 只在此处算一次并向下传递，绝不能在跑批过程中再调
+        // evalOutputRoot() —— 那时 AppConstant 已经是 eval-run 了，再拼一次会得到
+        // eval-run/eval-run/...（这个坑第一次实现时就踩到了，契约测试当场抓出）。
+        String originalOutputRoot = AppConstant.getCodeOutputRootDir();
+        String evalRunRoot = originalOutputRoot + File.separator + evalProperties.getOutputSubDir();
+        AppConstant.Storage.apply(evalRunRoot, AppConstant.getCodeDeployRootDir(),
+                AppConstant.getCodeDeployHost());
+        try {
+            for (EvalCase evalCase : evalSet.getCases()) {
+                EvalRunResult.CaseResult cr = runSingleCase(evalCase, batchId, evalRunRoot);
+                caseResults.add(cr);
+                log.info("用例 {} 完成：首轮={} 自愈={}轮 最终={} 耗时={}ms",
+                        evalCase.getId(), cr.isFirstBuildPassed(), cr.getHealingAttempts(),
+                        cr.isFinalPassed(), cr.getTotalCostMs());
+            }
+        } finally {
+            AppConstant.Storage.apply(originalOutputRoot, AppConstant.getCodeDeployRootDir(),
+                    AppConstant.getCodeDeployHost());
         }
 
         runResult.setCases(caseResults);
@@ -109,7 +137,8 @@ public class EvalRunner {
      * <p>任何异常都在这里被收成「失败结果」而不是向上抛 —— 一条用例挂掉
      * 不该让整轮跑批作废，否则一个偶发的接口超时就得从头再跑二十分钟。</p>
      */
-    private EvalRunResult.CaseResult runSingleCase(EvalCase evalCase, String batchId) {
+    private EvalRunResult.CaseResult runSingleCase(EvalCase evalCase, String batchId,
+                                                   String evalRunRoot) {
         EvalRunResult.CaseResult cr = new EvalRunResult.CaseResult();
         cr.setCaseId(evalCase.getId());
         cr.setDescription(evalCase.getDescription());
@@ -119,7 +148,8 @@ public class EvalRunner {
         // 负 appId 作为评测专用会话 id：与真实应用的 id 空间天然隔开，
         // 两次跑批之间也不会共用对话记忆（每批重新起号）
         Long evalAppId = nextEvalAppId();
-        String outputDir = evalOutputDir(evalCase);
+        // 产物目录按生成侧的命名规则算出，并在此刻清空（只清一次，且在生成之前）
+        String outputDir = prepareCaseOutputDir(evalCase, evalAppId, evalRunRoot);
 
         // 每条用例跑在独立虚拟线程上，主线程限时等待。
         // 目的不是提速，而是隔离：单条用例卡死（比如模型反复自我修复不收敛）
@@ -128,17 +158,17 @@ public class EvalRunner {
                 new java.util.concurrent.atomic.AtomicReference<>();
         Thread worker = Thread.ofVirtual()
                 .name("eval-case-" + evalCase.getId())
-                .start(() -> {
+                .start(() -> EvalScope.runInScope(() -> {
                     try {
                         if (evalCase.getCodeGenType() == CodeGenTypeEnum.VUE_PROJECT) {
                             executeVueCase(evalCase, evalAppId, outputDir, cr);
                         } else {
-                            executeSimpleCase(evalCase, evalAppId, cr);
+                            executeSimpleCase(evalCase, evalAppId, outputDir, cr);
                         }
                     } catch (RuntimeException e) {
                         asyncError.set(e);
                     }
-                });
+                }));
 
         int timeoutSeconds = evalProperties.getCaseTimeoutSeconds();
         try {
@@ -214,13 +244,15 @@ public class EvalRunner {
 
     /**
      * 执行 HTML / 多文件用例：没有构建步骤，最终通过等价于「解析保存成功」。
+     *
+     * <p>{@code outputDir} 由调用方传入而不再在这里现算 —— 现算的那版会连带
+     * 执行一次目录清空，把上一步刚落盘的代码删掉。</p>
      */
-    private void executeSimpleCase(EvalCase evalCase, Long evalAppId,
+    private void executeSimpleCase(EvalCase evalCase, Long evalAppId, String outputDir,
                                    EvalRunResult.CaseResult cr) {
         consumeGenerationStream(evalCase, evalAppId, cr);
 
-        String dir = evalOutputDir(evalCase);
-        File dirFile = new File(dir);
+        File dirFile = new File(outputDir);
         boolean saved = dirFile.isDirectory()
                 && FileUtil.loopFiles(dirFile).stream().anyMatch(File::isFile);
 
@@ -230,9 +262,9 @@ public class EvalRunner {
         cr.setBuildCostMs(0L);
         if (!saved) {
             cr.setFailureType(BuildFailureTypeEnum.MISSING_DIST.name());
-            cr.setFailureMessage("代码未成功保存到 " + dir);
+            cr.setFailureMessage("代码未成功保存到 " + outputDir);
         } else {
-            fillOutputSize(dir, cr);
+            fillOutputSize(outputDir, cr);
         }
     }
 
@@ -288,19 +320,25 @@ public class EvalRunner {
     }
 
     /**
-     * 评测产物目录：code-output-dir/eval-run/&lt;批次无关的用例 id&gt;。
+     * 单条用例的产物目录：与生成侧完全一致的 {@code {codeType}_{appId}} 命名。
      *
-     * <p>用用例 id 而非 appId 命名：重跑同一用例时目录会先清空重建，
-     * 保证不会读到上一轮的残留产物 —— 否则「这轮通过了」可能是上轮的
-     * dist 还在，这是评测里最隐蔽的一类假阳性。</p>
+     * <p><b>这里只负责清理，不负责创建</b>：目录由生成侧（文件工具 / 保存器）自己建，
+     * 评测只保证它是干净的。之所以强调这点 —— 早先的实现里「读产物」这一步
+     * 顺手调了一次带 {@code FileUtil.clean} 的路径计算，等于把刚落盘的代码清空，
+     * 是个必然踩中的雷。</p>
+     *
+     * <p>清理必须在生成之前做，且用例内只做一次，所以由调用方在启动 worker
+     * 之前显式调用。</p>
+     *
+     * <p>注意 {@code evalRunRoot} 是外部传入的固定值，不从 {@code AppConstant} 现读 ——
+     * 跑批期间 AppConstant 已被换成同一个值，现读会再拼一层目录。</p>
      */
-    private String evalOutputDir(EvalCase evalCase) {
-        String dir = AppConstant.getCodeOutputRootDir() + File.separator
-                + evalProperties.getOutputSubDir() + File.separator
-                + evalCase.getCodeGenType().getValue() + "_" + evalCase.getId();
-        // 清空重建，杜绝跨轮次残留
+    private String prepareCaseOutputDir(EvalCase evalCase, Long evalAppId, String evalRunRoot) {
+        String dir = evalRunRoot + File.separator
+                + evalCase.getCodeGenType().getValue() + "_" + evalAppId;
+        // 清空重建，杜绝跨轮次残留 —— 否则「这轮通过了」可能是上轮的 dist 还在，
+        // 这是评测里最隐蔽的一类假阳性。
         FileUtil.clean(dir);
-        FileUtil.mkdir(dir);
         return dir;
     }
 
