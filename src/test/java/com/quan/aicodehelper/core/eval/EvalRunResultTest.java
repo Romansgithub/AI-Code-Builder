@@ -278,4 +278,118 @@ class EvalRunResultTest {
             assertThat(report.length()).isLessThan(3000);
         }
     }
+
+    @Nested
+    @DisplayName("故障注入用例的口径")
+    class FaultInjectionScope {
+
+        /** 造一条配了故障注入的用例结果 */
+        private EvalRunResult.CaseResult injected(boolean firstPassed, int attempts, boolean finalPassed) {
+            EvalRunResult.CaseResult c = caseOf(firstPassed, attempts, finalPassed);
+            c.setCaseId("vue-healing-trigger");
+            c.setCodeGenType("vue_project");
+            c.setFaultInjected(true);
+            return c;
+        }
+
+        private List<EvalRunResult.CaseResult> eightNormalPlusInjected(
+                boolean injectedFinalPassed, int injectedAttempts) {
+            List<EvalRunResult.CaseResult> cases = new ArrayList<>();
+            for (int i = 0; i < 8; i++) {
+                cases.add(caseOf(true, 0, true));
+            }
+            cases.add(injected(false, injectedAttempts, injectedFinalPassed));
+            return cases;
+        }
+
+        @Test
+        @DisplayName("注入用例不计入一次通过率与最终通过率 —— 首轮必失败是它存在的目的")
+        void shouldExcludeInjectedFromPassRates() {
+            // 把刻意的失败算进「生成质量」，报告会凭空掉几个点，
+            // 而且掉的那部分恰好是我们自己制造的。
+            EvalRunResult.EvalSummary s =
+                    EvalRunResult.summarize(eightNormalPlusInjected(true, 1));
+
+            assertThat(s.getTotalCount()).isEqualTo(9);
+            assertThat(s.getRatedCount()).isEqualTo(8);
+            assertThat(s.getFaultInjectionCount()).isEqualTo(1);
+            assertThat(s.firstPassRate()).isEqualTo(100.0);
+            assertThat(s.finalPassRate()).isEqualTo(100.0);
+            assertThat(s.getFirstPassCount()).isEqualTo(8);
+        }
+
+        @Test
+        @DisplayName("注入用例仍要计入自愈成功率的分子分母 —— 它是自愈唯一的度量样本")
+        void shouldCountInjectedIntoHealingRate() {
+            EvalRunResult.EvalSummary s =
+                    EvalRunResult.summarize(eightNormalPlusInjected(true, 1));
+
+            assertThat(s.getHealingUsedCount()).isEqualTo(1);
+            assertThat(s.getHealedSuccessCount()).isEqualTo(1);
+            assertThat(s.healingSuccessRate()).isEqualTo(100.0);
+        }
+
+        @Test
+        @DisplayName("注入用例自愈失败时成功率是 0%（有数据），与「没触发自愈」不是一回事")
+        void shouldReportZeroWhenInjectedHealingFailed() {
+            EvalRunResult.EvalSummary s =
+                    EvalRunResult.summarize(eightNormalPlusInjected(false, 2));
+
+            assertThat(s.getHealingUsedCount()).isEqualTo(1);
+            assertThat(s.getHealedSuccessCount()).isZero();
+            assertThat(s.healingSuccessRate()).isZero();
+        }
+
+        @Test
+        @DisplayName("报告要说清通过率的分母为何不是用例总数")
+        void shouldExplainReducedDenominator() {
+            EvalRunResult run = new EvalRunResult();
+            run.setEvalSetName("集");
+            run.setEvalSetVersion("1.3");
+            run.setBatchId("b");
+            List<EvalRunResult.CaseResult> cases = eightNormalPlusInjected(true, 1);
+            run.setCases(cases);
+            run.setSummary(EvalRunResult.summarize(cases));
+
+            String report = run.toReadableReport();
+
+            assertThat(report).contains("100.0%（8/8）");
+            assertThat(report).contains("故障注入");
+            assertThat(report).contains("只用于验证自愈");
+        }
+
+        @Test
+        @DisplayName("配了注入用例却没有任何用例触发自愈时，报告必须警告而不是显示一切正常")
+        void shouldWarnWhenInjectionConfiguredButNoHealing() {
+            // 这正是 2026-09-21 那次跑批的真实情形：注入的 find 串没命中，
+            // 自愈从未被触发，报告却只写着「本次无用例触发自愈」——
+            // 看起来一切正常，实际上整条自愈链路根本没被验证过。
+            EvalRunResult run = new EvalRunResult();
+            run.setEvalSetName("集");
+            run.setEvalSetVersion("1.3");
+            run.setBatchId("b");
+            List<EvalRunResult.CaseResult> cases = eightNormalPlusInjected(false, 0);
+            run.setCases(cases);
+            run.setSummary(EvalRunResult.summarize(cases));
+
+            String report = run.toReadableReport();
+
+            assertThat(report).contains("没有任何用例触发自愈");
+            assertThat(report).contains("本轮自愈数据不可用");
+        }
+
+        @Test
+        @DisplayName("没有注入用例时 ratedCount 等于用例总数，口径与改造前完全一致")
+        void shouldKeepLegacyBehaviorWithoutInjection() {
+            List<EvalRunResult.CaseResult> cases = new ArrayList<>();
+            cases.add(caseOf(true, 0, true));
+            cases.add(caseOf(false, 1, true));
+
+            EvalRunResult.EvalSummary s = EvalRunResult.summarize(cases);
+
+            assertThat(s.getRatedCount()).isEqualTo(2);
+            assertThat(s.getFaultInjectionCount()).isZero();
+            assertThat(s.firstPassRate()).isEqualTo(50.0);
+        }
+    }
 }

@@ -144,6 +144,9 @@ public class EvalRunner {
         cr.setCaseId(evalCase.getId());
         cr.setDescription(evalCase.getDescription());
         cr.setCodeGenType(evalCase.getCodeGenType().getValue());
+        // 标出来让汇总口径能排除它：注入用例首轮必失败是我们的设计，
+        // 不该出现在「一次通过率」里（口径实现在 EvalRunResult.summarize）。
+        cr.setFaultInjected(evalCase.getFaultInjection() != null);
 
         long startedAt = System.currentTimeMillis();
         // 负 appId 作为评测专用会话 id：与真实应用的 id 空间天然隔开，
