@@ -433,6 +433,52 @@ class AiCodeGeneratorFacadeEvalTest {
 
             assertThat(captured).hasSize(1);
         }
+
+        @Test
+        @DisplayName("流在别的线程上完成时也必须让路 —— 判据必须在调用时捕获，回调里读 ThreadLocal 会拿到 false")
+        void shouldSkipAsyncBuildWhenStreamCompletesOnAnotherThread() {
+            // 上面那条用例用的是同步流，onComplete 恰好还在调用线程上，所以查得到 EvalScope；
+            // 生产环境里 onComplete 由 HTTP 客户端线程发出，两条线程不是同一条。
+            // 用 publishOn 复现这个条件：若判断写回「回调里现问 EvalScope.isActive()」，
+            // 本用例会红，而上面那条仍然是绿的 —— 上一版就是这么漏过去的。
+            when(aiService.generateVueProjectCodeStream(anyLong(), anyString()))
+                    .thenReturn(Flux.just("ignored")
+                            .publishOn(reactor.core.scheduler.Schedulers.parallel()));
+
+            EvalScope.runInScope(() ->
+                    facade.generateCodeStream(USER_MESSAGE, CodeGenTypeEnum.VUE_PROJECT, APP_ID)
+                            .blockLast());
+
+            // 给可能被误触发的虚拟线程一点时间；若真触发了，下面的断言会失败
+            try {
+                Thread.sleep(300L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            verify(healingService, never()).buildWithHealingOutcome(anyString(), anyLong());
+        }
+
+        @Test
+        @DisplayName("HTML 流在别的线程上完成时也不该重复上报")
+        void shouldNotRecordWhenHtmlStreamCompletesOnAnotherThread() {
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+                    .thenReturn(Flux.just(validHtmlStream())
+                            .publishOn(reactor.core.scheduler.Schedulers.parallel()));
+
+            EvalScope.runInScope(() ->
+                    facade.generateCodeStream(USER_MESSAGE, CodeGenTypeEnum.HTML, APP_ID).blockLast());
+
+            try {
+                Thread.sleep(300L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            assertThat(captured)
+                    .as("回调线程读不到 EvalScope 时会上报第二条记录，污染聚合口径")
+                    .isEmpty();
+        }
     }
 
     /**

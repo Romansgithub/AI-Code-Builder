@@ -301,6 +301,24 @@ public class EvalRunner {
         HealingOutcome outcome = buildSelfHealingService.buildWithHealingOutcome(outputDir, evalAppId);
         cr.setBuildCostMs(System.currentTimeMillis() - buildStartedAt);
 
+        if (injection.applied() && outcome.isFirstBuildPassed()) {
+            // 注入确实改坏了产物，首轮却通过了 —— 说明这处破坏没能变成构建失败：
+            // 要么目标文件不在构建图里，要么产物在注入之后又被别的流程改写回去了。
+            // 此时「首轮通过」不是生成质量的证明，而是「这一轮根本没测到自愈」。
+            // 2026-09-21 就是后者：并发的生产侧异步自愈抢先修好了产物，
+            // 评测自己的构建随后就过了，报告写成「自愈 0 轮 / 未触发自愈」。
+            // 因此显式判失败：宁可这条用例红着让人去查，也不产出一个看着正常的数字。
+            cr.setFirstBuildPassed(false);
+            cr.setFinalPassed(false);
+            cr.setHealingAttempts(0);
+            cr.setFailureType(BuildFailureTypeEnum.EXECUTION_ERROR.name());
+            cr.setFailureMessage("故障注入已应用，但首轮构建仍然通过：注入没有产生预期的构建失败，"
+                    + "本轮的「一次通过」不代表生成质量，自愈也因此完全没被验证。"
+                    + "请检查注入目标是否在构建图内、以及产物是否在注入后被其他并发流程改写。");
+            log.error("用例 {} 注入已应用但首轮构建通过，判定本轮数据无意义", evalCase.getId());
+            return;
+        }
+
         cr.setFirstBuildPassed(outcome.isFirstBuildPassed());
         cr.setHealingAttempts(outcome.getHealingAttempts());
         cr.setFinalPassed(outcome.isFinalPassed());

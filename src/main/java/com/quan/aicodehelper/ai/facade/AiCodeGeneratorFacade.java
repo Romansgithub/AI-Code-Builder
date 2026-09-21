@@ -74,7 +74,8 @@ public class AiCodeGeneratorFacade {
      * @return
      */
 
-    private Flux<String> processCodeStream(Flux<String> codeStream, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
+    private Flux<String> processCodeStream(Flux<String> codeStream, CodeGenTypeEnum codeGenTypeEnum,
+                                           Long appId, boolean inEvalScope) {
         StringBuilder codeBuilder = new StringBuilder();
         long startedAt = System.currentTimeMillis();
         return codeStream.doOnNext(chunk -> {
@@ -86,7 +87,14 @@ public class AiCodeGeneratorFacade {
                 // 评测跑批会自己对同一个目录调同步的「构建 + 自愈」以拿到结构化指标，
                 // 这里再异步跑一遍就会和它并发抢 node_modules / dist，并多写一条评测记录。
                 // 所以评测期间由调用方置起 EvalScope，此处让路。
-                if (EvalScope.isActive()) {
+                //
+                // 注意 inEvalScope 是**入参**而不是在这里现问 EvalScope.isActive()：
+                // 这个回调的执行线程由底层 HTTP 客户端决定，不是发起生成的那条线程，
+                // 而 EvalScope 是 ThreadLocal —— 在这里现问会恒得 false，
+                // 于是生产侧的异步构建照样启动。2026-09-21 的假数据就是这么来的：
+                // 异步那条先构建失败、抢先自愈把产物修好，评测自己的构建随后「首轮通过」，
+                // 报告写成「自愈 0 轮 / 未触发自愈」，而模型其实已经被调用过一次。
+                if (inEvalScope) {
                     return;
                 }
                 // Vue 工程走「异步构建 + 自动修复」：构建本身要跑 npm，耗时以分钟计，
@@ -97,7 +105,8 @@ public class AiCodeGeneratorFacade {
                 buildVueProjectAsync(projectPath, appId, generateCostMs);
                 return;
             }
-            recordSaveOutcome(codeBuilder.toString(), codeGenTypeEnum, appId, generateCostMs);
+            recordSaveOutcome(codeBuilder.toString(), codeGenTypeEnum, appId, generateCostMs,
+                    inEvalScope);
         });
     }
 
@@ -111,7 +120,7 @@ public class AiCodeGeneratorFacade {
      * 这里再记一条就变成同一用例两个 id 空间的数据混在一张表里，聚合口径会被污染。</p>
      */
     private void recordSaveOutcome(String completeCode, CodeGenTypeEnum codeGenTypeEnum,
-                                   Long appId, long generateCostMs) {
+                                   Long appId, long generateCostMs, boolean inEvalScope) {
         boolean saved = false;
         String failureMessage = null;
         String saveDirPath = null;
@@ -126,7 +135,9 @@ public class AiCodeGeneratorFacade {
             log.error("保存失败：{}", failureMessage);
         }
 
-        if (EvalScope.isActive()) {
+        // 与 processCodeStream 同样的理由：这个方法的调用者是流完成回调，
+        // 线程不固定，判断必须用入参而不是现问 EvalScope.isActive()。
+        if (inEvalScope) {
             return;
         }
 
@@ -244,21 +255,25 @@ public class AiCodeGeneratorFacade {
         // 裸奔出去（fail-open + 日志）而不是放行，是因为漏一次账就
         // 会在后续每一次调用上重复漏，账目永远不可信。
         llmCallGuard.acquire("代码生成-" + codeGenTypeEnum.getValue());
+        // 在**调用方线程**上就把「本次生成是否属于评测」定下来，再往下传。
+        // 这里读得到 EvalScope：评测跑批是在自己的用例线程里调进来的；
+        // 而流完成的回调不一定还跑在那条线程上，到那时再读就是恒 false（详见 processCodeStream）。
+        boolean inEvalScope = EvalScope.isActive();
         return switch (codeGenTypeEnum) {
             case HTML -> {
                 AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum);
                 Flux<String> codeStream = aiCodeGeneratorService.generateHtmlCodeStream(appId, userMessage);
-                yield processCodeStream(codeStream, codeGenTypeEnum, appId);
+                yield processCodeStream(codeStream, codeGenTypeEnum, appId, inEvalScope);
             }
             case MULTI_FILE -> {
                 AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum);
                 Flux<String> codeStream = aiCodeGeneratorService.generateMultiFileCodeStream(appId, userMessage);
-                yield processCodeStream(codeStream, codeGenTypeEnum, appId);
+                yield processCodeStream(codeStream, codeGenTypeEnum, appId, inEvalScope);
             }
             case VUE_PROJECT -> {
                 AiCodeGeneratorService service  = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum);
                 Flux<String> codeStream = service.generateVueProjectCodeStream(appId, userMessage);
-                yield processCodeStream(codeStream, codeGenTypeEnum, appId);
+                yield processCodeStream(codeStream, codeGenTypeEnum, appId, inEvalScope);
             }
             default -> {
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR, "不支持的代码生成类型");

@@ -191,4 +191,75 @@ class EvalRunnerTest {
             assertThat(result.getCases()).hasSize(2);
         }
     }
+
+    @Nested
+    @DisplayName("注入已应用却首轮通过")
+    class InjectionWithoutEffect {
+
+        @Test
+        @DisplayName("应判本轮数据无意义，而不是上报一条看着正常的「一次通过」")
+        void shouldFailWhenInjectionHasNoEffect() throws Exception {
+            props.setEnabled(true);
+            props.setCaseTimeoutSeconds(5);
+            props.init();
+
+            // 沙箱化产物根，避免往项目真实的 tmp/code_output 里写东西
+            java.nio.file.Path sandbox = java.nio.file.Files.createTempDirectory("eval-guard-test");
+            String originalRoot = com.quan.aicodehelper.constant.AppConstant.getCodeOutputRootDir();
+            com.quan.aicodehelper.constant.AppConstant.Storage.apply(sandbox.toString(),
+                    com.quan.aicodehelper.constant.AppConstant.getCodeDeployRootDir(),
+                    com.quan.aicodehelper.constant.AppConstant.getCodeDeployHost());
+            try {
+                com.quan.aicodehelper.model.dto.eval.EvalSet set =
+                        new com.quan.aicodehelper.model.dto.eval.EvalSet();
+                set.setName("t");
+                set.setVersion("1.0");
+                com.quan.aicodehelper.model.dto.eval.EvalCase c =
+                        new com.quan.aicodehelper.model.dto.eval.EvalCase();
+                c.setId("vue-healing-trigger");
+                c.setCodeGenType(com.quan.aicodehelper.model.enums.CodeGenTypeEnum.VUE_PROJECT);
+                c.setPrompt("p");
+                com.quan.aicodehelper.model.dto.eval.EvalCase.FaultInjection fi =
+                        new com.quan.aicodehelper.model.dto.eval.EvalCase.FaultInjection();
+                fi.setFind("'@/components/");
+                fi.setReplace("'@/components-broken/");
+                c.setFaultInjection(fi);
+                set.setCases(java.util.List.of(c));
+                when(loader.load()).thenReturn(set);
+
+                // 生成阶段把带目标串的源文件写进产物目录，注入才有落点
+                when(facade.generateCodeStream(anyString(), any(), anyLong())).thenAnswer(inv -> {
+                    Long appId = inv.getArgument(2);
+                    java.nio.file.Path src = java.nio.file.Paths.get(
+                            com.quan.aicodehelper.constant.AppConstant.getCodeOutputRootDir(),
+                            "vue_project_" + appId, "src", "pages");
+                    java.nio.file.Files.createDirectories(src);
+                    java.nio.file.Files.writeString(src.resolve("Home.vue"),
+                            "<script setup>\nimport X from '@/components/X.vue'\n</script>\n");
+                    return Flux.empty();
+                });
+                // 首轮就报「通过」：模拟产物在注入之后又被别的流程改写回原样
+                com.quan.aicodehelper.core.healing.BuildSelfHealingService healing =
+                        (com.quan.aicodehelper.core.healing.BuildSelfHealingService)
+                                ReflectionTestUtils.getField(runner, "buildSelfHealingService");
+                when(healing.buildWithHealingOutcome(anyString(), anyLong())).thenReturn(
+                        com.quan.aicodehelper.core.healing.HealingOutcome.of(
+                                com.quan.aicodehelper.core.builder.BuildResult.ok("ok"), true, 0, 10L));
+
+                EvalRunResult result = runner.run();
+
+                EvalRunResult.CaseResult cr = result.getCases().get(0);
+                assertThat(cr.isFirstBuildPassed()).isFalse();
+                assertThat(cr.isFinalPassed()).isFalse();
+                assertThat(cr.getFailureMessage())
+                        .contains("注入")
+                        .contains("没有产生预期的构建失败");
+            } finally {
+                com.quan.aicodehelper.constant.AppConstant.Storage.apply(originalRoot,
+                        com.quan.aicodehelper.constant.AppConstant.getCodeDeployRootDir(),
+                        com.quan.aicodehelper.constant.AppConstant.getCodeDeployHost());
+                cn.hutool.core.io.FileUtil.del(sandbox.toFile());
+            }
+        }
+    }
 }
