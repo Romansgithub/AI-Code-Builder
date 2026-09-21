@@ -17,6 +17,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -110,6 +112,83 @@ class EvalRunnerTest {
             assertThat(cr.isTimedOut()).isTrue();
             assertThat(cr.isFinalPassed()).isFalse();
             assertThat(cr.getFailureType()).isEqualTo(BuildFailureTypeEnum.TIMEOUT.name());
+        }
+    }
+
+    @Nested
+    @DisplayName("单用例开关")
+    class CaseFilter {
+
+        /**
+         * 造一个含两条 HTML 用例的评测集。
+         */
+        private com.quan.aicodehelper.model.dto.eval.EvalSet twoCases() {
+            com.quan.aicodehelper.model.dto.eval.EvalSet set =
+                    new com.quan.aicodehelper.model.dto.eval.EvalSet();
+            set.setName("t");
+            set.setVersion("1.0");
+            set.setCases(java.util.List.of(
+                    htmlCase("vue-healing-trigger"), htmlCase("html-landing")));
+            return set;
+        }
+
+        private com.quan.aicodehelper.model.dto.eval.EvalCase htmlCase(String id) {
+            com.quan.aicodehelper.model.dto.eval.EvalCase c =
+                    new com.quan.aicodehelper.model.dto.eval.EvalCase();
+            c.setId(id);
+            c.setCodeGenType(com.quan.aicodehelper.model.enums.CodeGenTypeEnum.HTML);
+            c.setPrompt("p");
+            return c;
+        }
+
+        @Test
+        @DisplayName("指定 caseId 时只跑那一条，其余用例不该被调用")
+        void shouldRunOnlySpecifiedCase() {
+            props.setEnabled(true);
+            props.setCaseTimeoutSeconds(1);
+            props.init();
+            when(loader.load()).thenReturn(twoCases());
+            when(facade.generateCodeStream(anyString(), any(), anyLong()))
+                    .thenReturn(Flux.never());
+
+            EvalRunResult result = runner.run("vue-healing-trigger");
+
+            assertThat(result.getCases()).hasSize(1);
+            assertThat(result.getCases().get(0).getCaseId()).isEqualTo("vue-healing-trigger");
+            // 另一条用例一次都不该被跑到 —— 这正是省下 token 的地方
+            verify(facade, times(1)).generateCodeStream(anyString(), any(), anyLong());
+        }
+
+        @Test
+        @DisplayName("caseId 拼错时必须报错并列出可用 id，绝不能静默跑 0 条")
+        void shouldFailLoudlyOnUnknownCaseId() {
+            props.setEnabled(true);
+            props.init();
+            when(loader.load()).thenReturn(twoCases());
+
+            assertThatThrownBy(() -> runner.run("vue-healing-triggr"))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("vue-healing-triggr")
+                    .hasMessageContaining("vue-healing-trigger")
+                    .hasMessageContaining("html-landing");
+
+            // 拼错时连一条都不该跑：宁可不跑，也不要给一份空报告当成功
+            verify(facade, times(0)).generateCodeStream(anyString(), any(), anyLong());
+        }
+
+        @Test
+        @DisplayName("不传 caseId 时仍跑全量，保持原有行为")
+        void shouldRunAllWhenNoFilter() {
+            props.setEnabled(true);
+            props.setCaseTimeoutSeconds(1);
+            props.init();
+            when(loader.load()).thenReturn(twoCases());
+            when(facade.generateCodeStream(anyString(), any(), anyLong()))
+                    .thenReturn(Flux.never());
+
+            EvalRunResult result = runner.run();
+
+            assertThat(result.getCases()).hasSize(2);
         }
     }
 }

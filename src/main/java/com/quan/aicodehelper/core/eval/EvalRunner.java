@@ -80,12 +80,34 @@ public class EvalRunner {
      * @return 跑批结果
      */
     public EvalRunResult run() {
+        return run(null);
+    }
+
+    /**
+     * 跑一轮评测，可只跑其中一条用例。
+     *
+     * <p><b>为什么需要「只跑一条」</b>：跑批是真实调用 AI + 真实 npm 构建，
+     * 每次验证改动的代价是整集用例的 token 与十几分钟等待。而实际改动往往
+     * 只影响一条链路 —— 例如修了自愈的调用方式，关心的就只有那条注入用例。
+     * 没有这个入口时，「验证一处修复」必须付整集的成本，于是要么不敢验证，
+     * 要么付了成本才发现改错。这个开关把验证成本按改动范围切分。</p>
+     *
+     * <p>注意它只影响「跑哪些用例」，不改动任何指标口径：单跑一条时，
+     * 通过率的分母自然变成 1（非注入用例）或 0（注入用例），
+     * 因此<b>单条跑批的数字不能与整集跑批横向比较</b>，
+     * 它只用于回答「这条链路现在通不通」。</p>
+     *
+     * @param caseIdFilter 只跑这条用例；为空/空白表示跑全量
+     * @return 跑批结果
+     */
+    public EvalRunResult run(String caseIdFilter) {
         if (!evalProperties.isEnabled()) {
             throw new com.quan.aicodehelper.exception.BusinessException(
                     com.quan.aicodehelper.exception.ErrorCode.SYSTEM_ERROR,
                     "评测跑批未启用，请设置 app.eval.enabled=true");
         }
         EvalSet evalSet = evalSetLoader.load();
+        List<EvalCase> selectedCases = selectCases(evalSet, caseIdFilter);
         String batchId = "eval-" + IdUtil.fastSimpleUUID().substring(0, 8);
 
         EvalRunResult runResult = new EvalRunResult();
@@ -95,8 +117,9 @@ public class EvalRunner {
         long startedAt = System.currentTimeMillis();
         runResult.setStartedAt(startedAt);
 
-        log.info("开始评测跑批 batchId={}，评测集「{}」v{}，共 {} 条用例",
-                batchId, evalSet.getName(), evalSet.getVersion(), evalSet.getCases().size());
+        log.info("开始评测跑批 batchId={}，评测集「{}」v{}，共 {} 条用例{}",
+                batchId, evalSet.getName(), evalSet.getVersion(), selectedCases.size(),
+                StrUtil.isBlank(caseIdFilter) ? "" : "（已按 caseId 限定）");
 
         List<EvalRunResult.CaseResult> caseResults = new ArrayList<>();
         // 整轮跑批期间把产物根切到 eval-run 子目录，跑完必须还原：
@@ -110,7 +133,7 @@ public class EvalRunner {
         AppConstant.Storage.apply(evalRunRoot, AppConstant.getCodeDeployRootDir(),
                 AppConstant.getCodeDeployHost());
         try {
-            for (EvalCase evalCase : evalSet.getCases()) {
+            for (EvalCase evalCase : selectedCases) {
                 EvalRunResult.CaseResult cr = runSingleCase(evalCase, batchId, evalRunRoot);
                 caseResults.add(cr);
                 log.info("用例 {} 完成：首轮={} 自愈={}轮 最终={} 耗时={}ms",
@@ -130,6 +153,34 @@ public class EvalRunner {
                 batchId, runResult.getSummary().firstPassRate(),
                 runResult.getSummary().healingSuccessRate(), runResult.getTotalCostMs());
         return runResult;
+    }
+
+    /**
+     * 按 caseId 过滤出本轮要跑的用例。
+     *
+     * <p><b>找不到就必须报错，不能静默跑 0 条</b>：如果拼错一个 caseId 就
+     * 「跑完 0 条并返回成功」，调用方会得到一个空报告 —— 它看起来不像错误
+     * （没有异常、没有失败用例），于是「验证过了」的错觉比没验证更危险。
+     * 报错时把可用 caseId 一并列出，是让用户一眼看出拼错在哪，而不是去翻评测集文件。</p>
+     */
+    private List<EvalCase> selectCases(EvalSet evalSet, String caseIdFilter) {
+        List<EvalCase> allCases = evalSet.getCases();
+        if (StrUtil.isBlank(caseIdFilter)) {
+            return allCases;
+        }
+        List<EvalCase> matched = allCases.stream()
+                .filter(c -> caseIdFilter.equals(c.getId()))
+                .toList();
+        if (matched.isEmpty()) {
+            String available = allCases.stream()
+                    .map(EvalCase::getId)
+                    .collect(java.util.stream.Collectors.joining("、"));
+            throw new com.quan.aicodehelper.exception.BusinessException(
+                    com.quan.aicodehelper.exception.ErrorCode.PARAMS_ERROR,
+                    "评测集里没有 caseId=" + caseIdFilter + " 的用例，可用用例：" + available);
+        }
+        log.info("本轮跑批限定用例：{}（原用例数 {}）", caseIdFilter, allCases.size());
+        return matched;
     }
 
     /**

@@ -63,13 +63,22 @@ public class EvalController {
      *
      * <p>同步返回结果并附上可读报告。注意这会真实调用 AI、真实跑 npm，
      * 耗时很长，请用足够长的超时调用。</p>
+     *
+     * <p><b>为什么 allow caseId</b>：跑批是真实烧 token 的动作，全量一轮
+     * 代价不小。只改了一条链路时（例如自愈的调用方式），传
+     * {@code ?caseId=vue-healing-trigger} 就能只验证那一条，
+     * 不必为了一处改动付整集的成本。</p>
+     *
+     * @param caseId 只跑这条用例；不传表示跑全量。传了不存在的 id 会直接报错，
+     *               不会静默跑 0 条
      */
     @PostMapping("/run")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     @Operation(summary = "执行评测跑批（耗时较长）")
-    public BaseResponse<EvalRunResult> runEval() {
-        log.info("收到评测跑批请求");
-        EvalRunResult result = evalRunner.run();
+    public BaseResponse<EvalRunResult> runEval(
+            @RequestParam(required = false) String caseId) {
+        log.info("收到评测跑批请求，caseId={}", caseId == null ? "全量" : caseId);
+        EvalRunResult result = evalRunner.run(caseId);
         // 同时把可读报告打进日志：跑批通常由命令行/接口触发，
         // 直接看日志比再调一次报告接口方便
         log.info("评测跑批报告：\n{}", result.toReadableReport());
