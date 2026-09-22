@@ -1,5 +1,6 @@
 package com.quan.aicodehelper.core.builder;
 
+import com.quan.aicodehelper.config.BuilderProperties;
 import com.quan.aicodehelper.model.enums.BuildFailureTypeEnum;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -138,6 +139,51 @@ class VueProjectBuilderTest {
         void legacyReturnsFalseForInvalid() {
             assertThat(builder.buildProject(workDir.resolve("nope").toString())).isFalse();
         }
+    }
+
+    @Nested
+    @DisplayName("npm 依赖源参数")
+    class NpmRegistryArg {
+
+        @Test
+        @DisplayName("配了镜像后，按空格切分仍是一个完整参数（源地址不会被 split 切碎）")
+        void appendsRegistryWhenConfigured() {
+            setRegistry("https://registry.npmmirror.com");
+
+            // 构建器用 command.split("\\s+") 拆命令：源地址里若含空格，会被拆成两个参数
+            String command = "npm.cmd install" + invokeNpmRegistryArg();
+
+            assertThat(command.split("\\s+")).containsExactly(
+                    "npm.cmd", "install", "--registry=https://registry.npmmirror.com");
+        }
+
+        @Test
+        @DisplayName("留空时应返回空串 —— 命令必须与改造前逐字一致，不偷偷改变行为")
+        void appendsNothingWhenBlank() {
+            setRegistry("   ");
+
+            assertThat(invokeNpmRegistryArg()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("配置未装配时不应抛异常，同样不追加参数")
+        void handlesMissingProperties() {
+            ReflectionTestUtils.setField(builder, "builderProperties", null);
+
+            assertThat(invokeNpmRegistryArg()).isEmpty();
+        }
+
+        private void setRegistry(String registry) {
+            BuilderProperties props = new BuilderProperties();
+            props.setNpmRegistry(registry);
+            ReflectionTestUtils.setField(builder, "builderProperties", props);
+        }
+    }
+
+    private String invokeNpmRegistryArg() {
+        String result = ReflectionTestUtils.invokeMethod(builder, "npmRegistryArg");
+        assertThat(result).isNotNull();
+        return result;
     }
 
     /**

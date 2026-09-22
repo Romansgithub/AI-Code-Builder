@@ -2,6 +2,7 @@ package com.quan.aicodehelper.core.builder;
 
 import cn.hutool.core.util.RuntimeUtil;
 import com.quan.aicodehelper.ai.tools.GenerationProgressRegistry;
+import com.quan.aicodehelper.config.BuilderProperties;
 import com.quan.aicodehelper.model.enums.BuildFailureTypeEnum;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -36,6 +37,9 @@ public class VueProjectBuilder {
 
     @Resource
     private GenerationProgressRegistry generationProgressRegistry;
+
+    @Resource
+    private BuilderProperties builderProperties;
 
     /**
      * 执行命令并收集输出。
@@ -145,6 +149,22 @@ public class VueProjectBuilder {
         return baseCommand;
     }
 
+    /**
+     * 拼出 npm 依赖源参数（形如 {@code  --registry=https://...}），供 {@code npm install} 使用。
+     *
+     * <p><b>只在安装了依赖时用得上</b>：{@code npm run build} 不下载包，故不追加，
+     * 免得把一个与本步无关的参数混进命令里。</p>
+     *
+     * <p>配置留空时返回空串，命令与原实现逐字一致 —— 不配镜像就不改变任何行为。</p>
+     */
+    private String npmRegistryArg() {
+        String registry = builderProperties == null ? null : builderProperties.getNpmRegistry();
+        if (registry == null || registry.isBlank()) {
+            return "";
+        }
+        return " --registry=" + registry;
+    }
+
     // ==================================================================
     // 对外接口
     // ==================================================================
@@ -186,7 +206,7 @@ public class VueProjectBuilder {
         // ---- 阶段一：依赖安装 ----
         if (shouldInstallDependencies(projectDir)) {
             emit(appId, "正在安装项目依赖...");
-            String installCommand = resolveExecutable("npm") + " install";
+            String installCommand = resolveExecutable("npm") + " install" + npmRegistryArg();
             int installExit = executeCommand(projectDir, installCommand, NPM_INSTALL_TIMEOUT_SECONDS, output);
             if (installExit != 0) {
                 String error = BuildErrorExtractor.extract(output.toString());
