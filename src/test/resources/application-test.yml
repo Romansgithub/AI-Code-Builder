@@ -10,6 +10,15 @@ app:
     code-deploy-dir: ${APP_STORAGE_CODE_DEPLOY_DIR:target/test-tmp/code_deploy}
     deploy-host: ${APP_STORAGE_DEPLOY_HOST:http://localhost:8080/api/static/}
 
+  rag:
+    embedding:
+      # 必须关掉：这项自检会在应用就绪后发一次真实的 HTTP 往返，
+      # 而测试环境里 LLM_BASE_URL / LLM_API_KEY 并不存在（只配在 IDE 运行配置里）。
+      # 开着会让 `mvn test` 依赖外部网络，破坏「离线可重复」这条前提。
+      # 顺带一提，正是因为占位符会原样保留成 ${LLM_BASE_URL} 字面量，
+      # 不关的话这里不会报「未配置」，而是真去打一个不存在的地址。
+      self-check: false
+
   # SSE 生成流：测试里把缓冲调小、保留期缩短，便于用少量事件把
   # 「环形淘汰」「过期回收」两条边界跑出来，不必构造几百条事件
   sse:

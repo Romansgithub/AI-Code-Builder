@@ -11,6 +11,8 @@ import com.quan.aicodehelper.core.eval.EvalScope;
 import com.quan.aicodehelper.core.eval.GenerationMetric;
 import com.quan.aicodehelper.core.healing.BuildSelfHealingService;
 import com.quan.aicodehelper.core.healing.HealingOutcome;
+import com.quan.aicodehelper.core.rag.CodeContextProvider;
+import com.quan.aicodehelper.core.rag.CodeIndexService;
 import com.quan.aicodehelper.exception.BusinessException;
 import com.quan.aicodehelper.exception.ErrorCode;
 import com.quan.aicodehelper.model.enums.BuildFailureTypeEnum;
@@ -63,6 +65,27 @@ public class AiCodeGeneratorFacade {
     private LlmCallGuard llmCallGuard;
 
     /**
+     * 检索增强：把项目现有代码里与本次需求相关的片段取出来，注入模型的 system message。
+     *
+     * <p>装在这一层的理由与预算闸门相同 —— 这里是「生成类调用」的唯一交汇处，
+     * 用户生成、构建自愈、评测跑批都要经过 {@link #generateCodeStream}。
+     * 检索增强只需要挂一处，就能覆盖所有路径；而评测跑批因为用的是负数 appId
+     * （见 {@code EvalRunner}），会自然退化为「无增强」，
+     * 于是既有评测集的口径不受影响、指标仍可与历史批次对比。</p>
+     *
+     * <p>永不抛异常：检索失败只意味着这一轮没有增强。</p>
+     */
+    @Resource
+    private CodeContextProvider codeContextProvider;
+
+    /**
+     * 工程代码索引：生成完成后异步把落盘的代码切块向量化，
+     * 供下一次迭代检索使用。
+     */
+    @Resource
+    private CodeIndexService codeIndexService;
+
+    /**
      * 处理代码流通用方法
      *
      * <p>这里是「生成 → 保存 / 构建」的总入口，也是唯一能同时拿到两段耗时的地方：
@@ -103,10 +126,14 @@ public class AiCodeGeneratorFacade {
                 String projectPath = AppConstant.getCodeOutputRootDir() + File.separator
                         + codeGenTypeEnum.getValue() + "_" + appId;
                 buildVueProjectAsync(projectPath, appId, generateCostMs);
+                // Vue 工程的源码是模型用工具直接写到磁盘的，此刻已就位，可以索引
+                indexAfterGeneration(appId, codeGenTypeEnum, inEvalScope);
                 return;
             }
             recordSaveOutcome(codeBuilder.toString(), codeGenTypeEnum, appId, generateCostMs,
                     inEvalScope);
+            // HTML / 多文件的源码刚刚由 saver 落盘，紧接着做一次索引预热
+            indexAfterGeneration(appId, codeGenTypeEnum, inEvalScope);
         });
     }
 
@@ -241,6 +268,48 @@ public class AiCodeGeneratorFacade {
     }
 
     /**
+     * 取本次生成要注入的项目现有代码上下文。
+     *
+     * <p>只在「已有应用」上做检索：负数 appId 是评测会话（见 {@code EvalRunner}），
+     * 它既没有磁盘上的历史代码，也不该让评测结果受到检索的影响 ——
+     * 否则同一份评测集在不同批次跑出来的数字就不可比了。</p>
+     *
+     * <p>检索发生时明确告知用户。与模型降级的处理一致（见 {@code notifyFallback}）：
+     * 用户看到了「已检索到相关片段」，才能理解为什么这次修改更准，
+     * 排查问题时也多一条线索；静默增强会让效果差异变得无从解释。</p>
+     */
+    private String resolveProjectContext(Long appId, CodeGenTypeEnum type, String userMessage) {
+        if (appId == null || appId <= 0) {
+            return "";
+        }
+        String context = codeContextProvider.buildContext(appId, type, userMessage);
+        if (context != null && !context.isBlank()) {
+            generationProgressRegistry.emit(appId,
+                    "已从项目现有代码中检索到相关片段，本次修改将基于这些真实代码进行");
+            return context;
+        }
+        return "";
+    }
+
+    /**
+     * 触发一次索引预热。
+     *
+     * <p>再兜一层异常：调用点位于流完成回调里，那里抛出的异常会被 Reactor
+     * 转成 {@code onError} 信号，把已经生成好的结果整条打断。
+     * 索引是派生数据，绝不能反过来伤害主流程。</p>
+     */
+    private void indexAfterGeneration(Long appId, CodeGenTypeEnum type, boolean inEvalScope) {
+        if (inEvalScope || appId == null) {
+            return;
+        }
+        try {
+            codeIndexService.indexAfterGeneration(appId, type);
+        } catch (Exception e) {
+            log.warn("触发代码索引预热失败（不影响主流程）：{}", e.getMessage());
+        }
+    }
+
+    /**
      * 根据用户消息生成代码流
      *
      * @param userMessage
@@ -259,20 +328,23 @@ public class AiCodeGeneratorFacade {
         // 这里读得到 EvalScope：评测跑批是在自己的用例线程里调进来的；
         // 而流完成的回调不一定还跑在那条线程上，到那时再读就是恒 false（详见 processCodeStream）。
         boolean inEvalScope = EvalScope.isActive();
+        // 检索放在预算闸门之后：额度已经告急时，不该先花一次向量化的钱再去撞那堵墙。
+        // 同时它也在「定下 inEvalScope」之后，顺序与既有逻辑保持一致。
+        String projectContext = resolveProjectContext(appId, codeGenTypeEnum, userMessage);
         return switch (codeGenTypeEnum) {
             case HTML -> {
                 AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum);
-                Flux<String> codeStream = aiCodeGeneratorService.generateHtmlCodeStream(appId, userMessage);
+                Flux<String> codeStream = aiCodeGeneratorService.generateHtmlCodeStream(appId, projectContext, userMessage);
                 yield processCodeStream(codeStream, codeGenTypeEnum, appId, inEvalScope);
             }
             case MULTI_FILE -> {
                 AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum);
-                Flux<String> codeStream = aiCodeGeneratorService.generateMultiFileCodeStream(appId, userMessage);
+                Flux<String> codeStream = aiCodeGeneratorService.generateMultiFileCodeStream(appId, projectContext, userMessage);
                 yield processCodeStream(codeStream, codeGenTypeEnum, appId, inEvalScope);
             }
             case VUE_PROJECT -> {
                 AiCodeGeneratorService service  = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum);
-                Flux<String> codeStream = service.generateVueProjectCodeStream(appId, userMessage);
+                Flux<String> codeStream = service.generateVueProjectCodeStream(appId, projectContext, userMessage);
                 yield processCodeStream(codeStream, codeGenTypeEnum, appId, inEvalScope);
             }
             default -> {

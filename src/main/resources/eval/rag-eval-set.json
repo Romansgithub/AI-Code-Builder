@@ -1,0 +1,217 @@
+{
+  "name": "代码检索召回评测集",
+  "version": "v1.1",
+  "description": "度量 RAG 代码库检索的召回质量。被测工程是平台真实生成并落盘的两个 Vue 工程；期望文件由人工阅读源码后标注（不得由模型生成期望答案后再用它评测模型，那是循环论证）。用例刻意分两类：POINTED（需求里直接写了文件名）与 SEMANTIC（需求只描述功能、不含任何代码标识符）—— 前者靠关键词与点名加成即可命中，后者才是向量检索真正要发挥作用的场景，两类必须分开统计。v1.1 把语义型从 8 条扩到 20 条：8 条时单条用例就摆动 12.5 个百分点，配对比较只看「两组一捞到一没捞到」的不一致对，v1.0 实测只有 3 个不一致对（两侧符号检验 p=0.25），不足以支撑「向量有效」这个结论；扩到 20 条才有可能落到 p<0.05。新用例仍严格遵守「不含文件名与代码标识符」，并刻意覆盖「语义型但词面与代码有轻微重合」的中间地带 —— 只靠关键字面完全不重合的极端样本，会把向量的收益算得过于乐观。",
+  "apps": [
+    {
+      "key": "tour",
+      "label": "云雾山旅游站",
+      "appId": 457738954912059392,
+      "codeGenType": "vue_project"
+    },
+    {
+      "key": "shop",
+      "label": "潮玩手办馆",
+      "appId": 457729432659181568,
+      "codeGenType": "vue_project"
+    }
+  ],
+  "cases": [
+    {
+      "id": "tour-navbar-pointed-01",
+      "appKey": "tour",
+      "kind": "POINTED",
+      "query": "把 Navbar.vue 里那个导航项「景点介绍」改成「景区导览」",
+      "expectedFiles": ["src/components/Navbar.vue"]
+    },
+    {
+      "id": "tour-footer-pointed-02",
+      "appKey": "tour",
+      "kind": "POINTED",
+      "query": "Footer.vue 底部的备案号换成浙ICP备20250001号",
+      "expectedFiles": ["src/components/Footer.vue"]
+    },
+    {
+      "id": "tour-guide-pointed-03",
+      "appKey": "tour",
+      "kind": "POINTED",
+      "query": "Guide.vue 里的装备清单再加上登山杖和雨衣两项",
+      "expectedFiles": ["src/pages/Guide.vue"]
+    },
+    {
+      "id": "tour-card-pointed-04",
+      "appKey": "tour",
+      "kind": "POINTED",
+      "query": "AttractionCard.vue 卡片上那个「必游」标签的颜色改得柔和些",
+      "expectedFiles": ["src/components/AttractionCard.vue"]
+    },
+    {
+      "id": "tour-navbar-semantic-05",
+      "appKey": "tour",
+      "kind": "SEMANTIC",
+      "query": "页面向下滚动之后，顶上那条导航栏的背景要变成不透明的白色",
+      "expectedFiles": ["src/components/Navbar.vue"]
+    },
+    {
+      "id": "tour-home-semantic-06",
+      "appKey": "tour",
+      "kind": "SEMANTIC",
+      "query": "网站一打开最上面那一屏的大标题，想换成一句更短的宣传语",
+      "expectedFiles": ["src/pages/Home.vue"]
+    },
+    {
+      "id": "tour-guide-semantic-07",
+      "appKey": "tour",
+      "kind": "SEMANTIC",
+      "query": "怎么去景区那一段，想补充一下坐高铁过去的说明",
+      "expectedFiles": ["src/pages/Guide.vue"]
+    },
+    {
+      "id": "tour-about-semantic-08",
+      "appKey": "tour",
+      "kind": "SEMANTIC",
+      "query": "游客想留言那个表单，提交成功后希望能自动把输入框清空",
+      "expectedFiles": ["src/pages/About.vue"]
+    },
+    {
+      "id": "shop-navbar-pointed-09",
+      "appKey": "shop",
+      "kind": "POINTED",
+      "query": "NavBar.vue 右上角那个「全部商品」改成「手办商城」",
+      "expectedFiles": ["src/components/NavBar.vue"]
+    },
+    {
+      "id": "shop-card-pointed-10",
+      "appKey": "shop",
+      "kind": "POINTED",
+      "query": "ProductCard.vue 上那个「缺货」的提示太显眼了，改成灰色小字",
+      "expectedFiles": ["src/components/ProductCard.vue"]
+    },
+    {
+      "id": "shop-detail-pointed-11",
+      "appKey": "shop",
+      "kind": "POINTED",
+      "query": "Detail.vue 的「立即购买」按钮加一个点击后的反馈提示",
+      "expectedFiles": ["src/pages/Detail.vue"]
+    },
+    {
+      "id": "shop-data-pointed-12",
+      "appKey": "shop",
+      "kind": "POINTED",
+      "query": "products.js 里再加两款高达模型的数据",
+      "expectedFiles": ["src/data/products.js"]
+    },
+    {
+      "id": "shop-app-semantic-13",
+      "appKey": "shop",
+      "kind": "SEMANTIC",
+      "query": "页面最底下那行版权信息，想补上完整的公司名称",
+      "expectedFiles": ["src/App.vue"]
+    },
+    {
+      "id": "shop-home-semantic-14",
+      "appKey": "shop",
+      "kind": "SEMANTIC",
+      "query": "首页「最新上架」里的商品，希望按上架时间倒着排",
+      "expectedFiles": ["src/pages/Home.vue"]
+    },
+    {
+      "id": "shop-products-semantic-15",
+      "appKey": "shop",
+      "kind": "SEMANTIC",
+      "query": "商品列表上面那排分类按钮，希望默认就选中「全部」",
+      "expectedFiles": ["src/pages/Products.vue"]
+    },
+    {
+      "id": "shop-detail-semantic-16",
+      "appKey": "shop",
+      "kind": "SEMANTIC",
+      "query": "买家最想知道这个手办到底多大，那部分信息现在太挤了，想排得清楚些",
+      "expectedFiles": ["src/pages/Detail.vue"]
+    },
+    {
+      "id": "tour-font-semantic-17",
+      "appKey": "tour",
+      "kind": "SEMANTIC",
+      "query": "网站的默认字体加载太慢了，想换成系统自带的那种，先不引外部字体了",
+      "expectedFiles": ["src/styles/main.css"]
+    },
+    {
+      "id": "tour-transition-semantic-18",
+      "appKey": "tour",
+      "kind": "SEMANTIC",
+      "query": "在几个页面之间切换的时候内容太生硬了，希望有个淡入淡出的过程",
+      "expectedFiles": ["src/App.vue"]
+    },
+    {
+      "id": "tour-menu-semantic-19",
+      "appKey": "tour",
+      "kind": "SEMANTIC",
+      "query": "在手机上点右上角那个展开按钮，要把菜单弹出来，再点一下能收回去",
+      "expectedFiles": ["src/components/Navbar.vue"]
+    },
+    {
+      "id": "tour-filter-empty-semantic-20",
+      "appKey": "tour",
+      "kind": "SEMANTIC",
+      "query": "景点按分类筛完之后要是啥也没筛出来，页面上空空的，想给句提示",
+      "expectedFiles": ["src/pages/Attractions.vue"]
+    },
+    {
+      "id": "tour-history-semantic-21",
+      "appKey": "tour",
+      "kind": "SEMANTIC",
+      "query": "景区这些年是怎么一步步建起来的，那段沿革介绍想做成一条从上往下排的时间线",
+      "expectedFiles": ["src/pages/About.vue"]
+    },
+    {
+      "id": "tour-faq-semantic-22",
+      "appKey": "tour",
+      "kind": "SEMANTIC",
+      "query": "游客最常问的那几个问题，点了标题能展开答案，同时把其他项自动收起来",
+      "expectedFiles": ["src/pages/Guide.vue"]
+    },
+    {
+      "id": "shop-banner-semantic-23",
+      "appKey": "shop",
+      "kind": "SEMANTIC",
+      "query": "首页顶上那张大图自己换得太快了，想慢一点，鼠标移上去的时候先别换",
+      "expectedFiles": ["src/pages/Home.vue"]
+    },
+    {
+      "id": "shop-card-title-semantic-24",
+      "appKey": "shop",
+      "kind": "SEMANTIC",
+      "query": "商品名太长的时候卡片会被撑破，希望最多显示两行，超出的用省略号",
+      "expectedFiles": ["src/components/ProductCard.vue"]
+    },
+    {
+      "id": "shop-detail-desc-semantic-25",
+      "appKey": "shop",
+      "kind": "SEMANTIC",
+      "query": "商品详情最下面那段文字太长了，想默认只露三行，点一下再看全部",
+      "expectedFiles": ["src/pages/Detail.vue"]
+    },
+    {
+      "id": "shop-story-semantic-26",
+      "appKey": "shop",
+      "kind": "SEMANTIC",
+      "query": "介绍我们店的那一段，图片放左边文字放右边；手机上文字排到图片上面去",
+      "expectedFiles": ["src/pages/About.vue"]
+    },
+    {
+      "id": "shop-logo-semantic-27",
+      "appKey": "shop",
+      "kind": "SEMANTIC",
+      "query": "网站左上角店名前面那个小图案，想换成我们自己店铺的图标",
+      "expectedFiles": ["src/components/NavBar.vue"]
+    },
+    {
+      "id": "shop-filter-icon-semantic-28",
+      "appKey": "shop",
+      "kind": "SEMANTIC",
+      "query": "商品列表上面那排分类按钮，前面的小图标想去掉，只留文字",
+      "expectedFiles": ["src/pages/Products.vue"]
+    }
+  ]
+}

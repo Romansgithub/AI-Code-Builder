@@ -12,6 +12,8 @@ import com.quan.aicodehelper.core.eval.EvalScope;
 import com.quan.aicodehelper.core.eval.GenerationMetric;
 import com.quan.aicodehelper.core.healing.BuildSelfHealingService;
 import com.quan.aicodehelper.core.healing.HealingOutcome;
+import com.quan.aicodehelper.core.rag.CodeContextProvider;
+import com.quan.aicodehelper.core.rag.CodeIndexService;
 import com.quan.aicodehelper.model.enums.BuildFailureTypeEnum;
 import com.quan.aicodehelper.model.enums.CodeGenTypeEnum;
 import org.junit.jupiter.api.AfterEach;
@@ -63,6 +65,8 @@ class AiCodeGeneratorFacadeEvalTest {
     private BuildSelfHealingService healingService;
     private GenerationProgressRegistry progressRegistry;
     private CodeGenEvalRecorder recorder;
+    private CodeContextProvider codeContextProvider;
+    private CodeIndexService codeIndexService;
     private AiCodeGeneratorFacade facade;
 
     /** 捕获上报的指标，便于断言字段。用并发集合是因为 Vue 分支在虚拟线程里上报 */
@@ -80,12 +84,19 @@ class AiCodeGeneratorFacadeEvalTest {
         healingService = mock(BuildSelfHealingService.class);
         progressRegistry = mock(GenerationProgressRegistry.class);
         recorder = mock(CodeGenEvalRecorder.class);
+        // 检索增强与索引都是旁路能力，这里一律置空实现 —— 本组用例验证的是
+        // 评测埋点语义，检索增强的契约由 core/rag 下的测试单独覆盖。
+        // 置空实现还有个副产品：即使代码里误把检索接进了评测路径，
+        // 索引也不会真的去写库，不会污染测试环境。
+        codeContextProvider = mock(CodeContextProvider.class);
+        codeIndexService = mock(CodeIndexService.class);
+        when(codeContextProvider.buildContext(anyLong(), any(), anyString())).thenReturn("");
 
         when(serviceFactory.getAiCodeGeneratorService(anyLong(), any())).thenReturn(aiService);
         // Vue 分支的流内容不参与断言（代码由工具直接落盘），给个空流即可；
         // 不在这里补桩的话，各用例会因 codeStream 为 null 报 NPE
-        when(aiService.generateVueProjectCodeStream(anyLong(), anyString())).thenReturn(Flux.empty());
-        when(aiService.generateMultiFileCodeStream(anyLong(), anyString())).thenReturn(Flux.empty());
+        when(aiService.generateVueProjectCodeStream(anyLong(), anyString(), anyString())).thenReturn(Flux.empty());
+        when(aiService.generateMultiFileCodeStream(anyLong(), anyString(), anyString())).thenReturn(Flux.empty());
 
         // 捕获所有上报，而不是只在某个分支断言 —— 便于统一检查「有且只有一条」
         org.mockito.Mockito.doAnswer(inv -> {
@@ -105,6 +116,8 @@ class AiCodeGeneratorFacadeEvalTest {
         ReflectionTestUtils.setField(facade, "buildSelfHealingService", healingService);
         ReflectionTestUtils.setField(facade, "generationProgressRegistry", progressRegistry);
         ReflectionTestUtils.setField(facade, "codeGenEvalRecorder", recorder);
+        ReflectionTestUtils.setField(facade, "codeContextProvider", codeContextProvider);
+        ReflectionTestUtils.setField(facade, "codeIndexService", codeIndexService);
         // 预算闸门给一个上限充足的真实实例：本组用例验证的是评测埋点语义，
         // 不该被预算逻辑干扰（预算行为由 LlmCallGuardTest 单独覆盖）
         LlmBudgetProperties budgetProperties = new LlmBudgetProperties();
@@ -179,7 +192,7 @@ class AiCodeGeneratorFacadeEvalTest {
         @Test
         @DisplayName("保存成功时应上报通过，且一次通过标记为 true")
         void shouldRecordPassedWhenSaveSucceeds() {
-            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString(), anyString()))
                     .thenReturn(Flux.just(validHtmlStream()));
 
             facade.generateCodeStream(USER_MESSAGE, CodeGenTypeEnum.HTML, APP_ID).blockLast();
@@ -200,7 +213,7 @@ class AiCodeGeneratorFacadeEvalTest {
         @Test
         @DisplayName("应统计出产物文件数与字节数，用于衡量生成代码量")
         void shouldMeasureOutputSize() {
-            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString(), anyString()))
                     .thenReturn(Flux.just(validHtmlStream()));
 
             facade.generateCodeStream(USER_MESSAGE, CodeGenTypeEnum.HTML, APP_ID).blockLast();
@@ -215,7 +228,7 @@ class AiCodeGeneratorFacadeEvalTest {
         @DisplayName("保存失败时应上报失败，且一次通过标记为 false")
         void shouldRecordFailureWhenSaveFails() {
             // 空白代码会让保存器抛 BusinessException，模拟解析/保存失败
-            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString(), anyString()))
                     .thenReturn(Flux.just("   "));
 
             facade.generateCodeStream(USER_MESSAGE, CodeGenTypeEnum.HTML, APP_ID).blockLast();
@@ -229,7 +242,7 @@ class AiCodeGeneratorFacadeEvalTest {
         @Test
         @DisplayName("保存失败也不应把异常抛给调用方")
         void shouldNotPropagateSaveFailure() {
-            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString(), anyString()))
                     .thenReturn(Flux.just(""));
 
             // blockLast 不抛异常，说明保存失败被内部消化，用户仍能拿到流
@@ -350,7 +363,7 @@ class AiCodeGeneratorFacadeEvalTest {
             org.mockito.Mockito.doThrow(new RuntimeException("统计表不存在"))
                     .when(recorder).record(any(GenerationMetric.class));
 
-            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString(), anyString()))
                     .thenReturn(Flux.just(validHtmlStream()));
 
             // 期望：不抛异常
@@ -360,7 +373,7 @@ class AiCodeGeneratorFacadeEvalTest {
         @Test
         @DisplayName("非 Vue 类型不应触发构建自愈")
         void shouldNotBuildForSimpleTypes() {
-            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString(), anyString()))
                     .thenReturn(Flux.just(validHtmlStream()));
 
             facade.generateCodeStream(USER_MESSAGE, CodeGenTypeEnum.HTML, APP_ID).blockLast();
@@ -407,7 +420,7 @@ class AiCodeGeneratorFacadeEvalTest {
         @Test
         @DisplayName("HTML 类型仍应保存代码，但不再重复上报指标")
         void shouldSaveButNotRecordDuringEval() {
-            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString(), anyString()))
                     .thenReturn(Flux.just(validHtmlStream()));
 
             EvalScope.runInScope(() ->
@@ -426,7 +439,7 @@ class AiCodeGeneratorFacadeEvalTest {
         @Test
         @DisplayName("非评测场景行为不变：照常上报")
         void shouldStillRecordOutsideEval() {
-            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString(), anyString()))
                     .thenReturn(Flux.just(validHtmlStream()));
 
             facade.generateCodeStream(USER_MESSAGE, CodeGenTypeEnum.HTML, APP_ID).blockLast();
@@ -441,7 +454,7 @@ class AiCodeGeneratorFacadeEvalTest {
             // 生产环境里 onComplete 由 HTTP 客户端线程发出，两条线程不是同一条。
             // 用 publishOn 复现这个条件：若判断写回「回调里现问 EvalScope.isActive()」，
             // 本用例会红，而上面那条仍然是绿的 —— 上一版就是这么漏过去的。
-            when(aiService.generateVueProjectCodeStream(anyLong(), anyString()))
+            when(aiService.generateVueProjectCodeStream(anyLong(), anyString(), anyString()))
                     .thenReturn(Flux.just("ignored")
                             .publishOn(reactor.core.scheduler.Schedulers.parallel()));
 
@@ -462,7 +475,7 @@ class AiCodeGeneratorFacadeEvalTest {
         @Test
         @DisplayName("HTML 流在别的线程上完成时也不该重复上报")
         void shouldNotRecordWhenHtmlStreamCompletesOnAnotherThread() {
-            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString()))
+            when(aiService.generateHtmlCodeStream(eq(APP_ID), anyString(), anyString()))
                     .thenReturn(Flux.just(validHtmlStream())
                             .publishOn(reactor.core.scheduler.Schedulers.parallel()));
 
