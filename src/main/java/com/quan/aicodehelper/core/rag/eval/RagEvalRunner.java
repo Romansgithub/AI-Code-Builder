@@ -22,36 +22,13 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 代码检索召回评测执行器。
- *
- * <p><b>它回答什么问题</b>：RAG 的「检索」这一环到底准不准，以及为什么
- * 混合权重取 {@code 0.7 / 0.3}。前者是 Recall@K 一类的绝对值，后者只能靠消融对照 ——
- * 所以这个执行器默认把三组权重跑在同一批索引与同一批查询上，
- * 差异才只来自权重，对照才成立。</p>
- *
- * <p><b>为什么指标算在「文件级」</b>：用户说「改一下导航栏」时，他心里指向的是一个文件，
- * 不是某几行。按片段级算会把「命中了同一个文件的其它片段」判成漏召，
- * 分数低于真实体验。文件级也更方便与「需求 → 该改哪个文件」这种人工标注对齐。</p>
- *
- * <p><b>它不写任何业务数据</b>：只读索引与检索器，唯一的写操作是
- * {@link CodeIndexService#ensureIndexed} 建立/刷新 code_chunk —— 那是本来就应该有的派生数据。
- * 评测结果直接返回，不落库：这是实验数据，不是运营数据，落库要加表加 Mapper，
- * 收益不抵复杂度。</p>
- *
- * <p><b>它不该在 {@code mvn test} 里跑</b>：真实向量化需要外部网络与凭证，
- * 而测试环境的数据源是假值、{@code code-output-dir} 指向 {@code target/test-tmp}。
- * 这个执行器通过接口在真实运行环境下触发，见 {@code RagEvalController}。</p>
+ * 代码检索召回评测执行器：三组权重（仅关键词/仅向量/混合）同批跑，差异只来自权重，消融才成立；指标算文件级，不在 mvn test 里跑。
  */
 @Slf4j
 @Service
 public class RagEvalRunner {
 
-    /**
-     * 一次消融跑几组。
-     *
-     * <p>「仅关键词」与「仅向量」是把一路权重压到 0，用来分别暴露两条路径各自的能力边界；
-     * 「混合」用配置里的真实权重，是线上实际生效的那一组。</p>
-     */
+    /** 消融分组：「仅关键词」「仅向量」压一路权重为 0 以暴露各路能力边界；「混合」用线上真实权重。 */
     private static final Mode KEYWORD_ONLY = new Mode("仅关键词(0/1)", 0.0D, 1.0D);
     private static final Mode VECTOR_ONLY = new Mode("仅向量(1/0)", 1.0D, 0.0D);
 
@@ -74,13 +51,7 @@ public class RagEvalRunner {
         return run(true);
     }
 
-    /**
-     * 跑一轮检索召回评测。
-     *
-     * @param ablation 是否跑三组权重消融。为 false 时只跑「混合」一组 ——
-     *                 检索每条用例都要一次 embedding 调用，三组就是三倍。
-     *                 只是想确认「有没有变差」时没必要付这个成本。
-     */
+    /** @param ablation 是否跑三组消融；false 只跑混合组，省去三倍 embedding 调用 */
     public RagEvalResult run(boolean ablation) {
         RagEvalSet set = ragEvalSetLoader.load();
         long startedAt = System.currentTimeMillis();
@@ -91,12 +62,9 @@ public class RagEvalRunner {
         result.setTotalCases(set.getCases().size());
         result.setTopK(ragProperties.getTopK());
         result.setMaxChunksPerFile(ragProperties.getMaxChunksPerFile());
-        // 折扣系数也要进报告头：它决定这批数字与上一批能不能直接比。
-        // 第四轮实测时报告里没有这一项，只能去翻 application.yml 才知道
-        // Recall 为什么掉了 7 个百分点 —— 配置与数字必须写在同一份报告里
+        // 折扣系数进报告头：配置决定这批数字能否与上一批直接比，配置与数字须写在同一份报告
         result.setGenericFilePenalty(ragProperties.getGenericFilePenalty());
-        // 先记下来：向量不可用时所有指标都会退化成纯关键词，
-        // 而「纯关键词」恰好也是消融里的一组，两者混在一起会被误读成「向量没有价值」
+        // 先记 embedding 是否可用：不可用时指标退化为纯关键词，与消融「纯关键词」组混读会误判向量无价值
         result.setEmbeddingAvailable(embeddingClient.available());
 
         Map<String, RagEvalApp> appByKey = new HashMap<>();
@@ -114,8 +82,7 @@ public class RagEvalRunner {
 
         try {
             for (Mode mode : modes) {
-                // 直接改可变配置对象而不是重启：三组的工程、索引、查询完全相同，
-                // 唯一变量就是这里的两行权重 —— 消融实验的可信度来自这一点
+                // 直接改可变配置对象而不是重启：三组的工程、索引、查询完全相同，唯一变量就是这两行权重
                 ragProperties.setVectorWeight(mode.vectorWeight());
                 ragProperties.setKeywordWeight(mode.keywordWeight());
                 RagEvalResult.ModeResult modeResult = runMode(set, appByKey, mode);
@@ -128,8 +95,7 @@ public class RagEvalRunner {
                         String.format("%.1f%%", s.getHitRate() * 100));
             }
         } finally {
-            // 评测改的是全局配置，抛异常也必须还原 —— 否则线上会一直用
-            // 「仅关键词」或「仅向量」的权重跑，而且不会有任何提示
+            // 评测改的是全局配置，抛异常也必须还原，否则线上会一直用消融权重跑且无提示
             ragProperties.setVectorWeight(originVector);
             ragProperties.setKeywordWeight(originKeyword);
         }
@@ -138,12 +104,7 @@ public class RagEvalRunner {
         return result;
     }
 
-    /**
-     * 建立/刷新各被测应用的索引，并记录片段数。
-     *
-     * <p>先把索引做完再逐组检索：三组共用同一份索引，避免某一组恰好在索引重建的
-     * 间隙里跑，导致组间不可比。</p>
-     */
+    /** 建立/刷新各应用索引并记录片段数。先建完索引再逐组检索，三组共用同一份索引以保证可比。 */
     private void indexApps(RagEvalSet set, RagEvalResult result) {
         long startedAt = System.currentTimeMillis();
         for (RagEvalApp app : set.getApps()) {
@@ -195,14 +156,7 @@ public class RagEvalRunner {
         return modeResult;
     }
 
-    /**
-     * 跑单条用例。检索器自身永不抛出（失败返回空列表），
-     * 所以这里不需要 try-catch —— 空结果本身就是「这一条漏召了」这个事实。
-     *
-     * <p>包可见而非 private：指标算法是这套评测的核心，必须能被单独测试。
-     * 只靠「跑一次真实评测看数字」是测不出边界的 —— 真实数据里
-     * 很难同时出现「期望文件有 3 个」「同一文件多个片段」「结果为空」这些情形。</p>
-     */
+    /** 跑单条用例。检索器永不抛出，空结果即「漏召」，故无需 try-catch；包可见以便单测覆盖指标边界。 */
     RagEvalResult.CaseOutcome evaluateOne(RagEvalCase c, RagEvalApp app) {
         RagEvalResult.CaseOutcome outcome = new RagEvalResult.CaseOutcome();
         outcome.setCaseId(c.getId());
@@ -217,8 +171,7 @@ public class RagEvalRunner {
         outcome.setCostMs(System.currentTimeMillis() - startedAt);
         outcome.setRetrievedCount(slices.size());
 
-        // 按排名去重但保持顺序：指标是文件级的，同一文件的多个片段只应算一次，
-        // 而「第一次出现在第几名」这个顺序恰恰是 MRR 要用的信息
+        // 按排名去重且保序：文件级指标下同一文件多片段只算一次，而首次出现名次正是 MRR 所需
         Set<String> ordered = new LinkedHashSet<>();
         for (RetrievedSlice slice : slices) {
             ordered.add(slice.filePath());
@@ -226,7 +179,7 @@ public class RagEvalRunner {
         List<String> retrievedFiles = new ArrayList<>(ordered);
         outcome.setRetrievedFiles(retrievedFiles);
 
-        // 检索结果已按总分降序，取第一条用来判断「向量到底有没有参与排序」
+        // 取首条判断「向量是否参与了排序」
         if (!slices.isEmpty()) {
             outcome.setTopVectorScore(slices.get(0).vectorScore());
             outcome.setTopKeywordScore(slices.get(0).keywordScore());
@@ -262,11 +215,7 @@ public class RagEvalRunner {
     }
 
     /**
-     * 汇总一组用例的指标。各项都是「按用例求平均」而不是「按片段加权」——
-     * 每条需求的重要性是相同的，让片段多的用例拉高整体分数会掩盖跨文件需求的漏召。
-     *
-     * <p>包可见以便单测：空集合必须返回全 0 而不是抛异常（消融时若某个类型
-     * 一条用例都没有，整轮评测不该因此崩掉）。</p>
+     * 汇总一组用例指标，按用例求平均而非按片段加权，避免片段多的用例掩盖跨文件漏召；空集合返回全 0 而非抛异常。
      */
     RagEvalResult.MetricSummary summarize(List<RagEvalResult.CaseOutcome> outcomes) {
         RagEvalResult.MetricSummary summary = new RagEvalResult.MetricSummary();
@@ -300,13 +249,6 @@ public class RagEvalRunner {
         return summary;
     }
 
-    /**
-     * 一种权重配置。
-     *
-     * @param name         报告里的显示名
-     * @param vectorWeight 向量余弦权重
-     * @param keywordWeight 关键词命中率权重
-     */
     private record Mode(String name, double vectorWeight, double keywordWeight) {
     }
 }

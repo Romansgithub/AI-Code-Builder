@@ -1,7 +1,4 @@
-/**
- * Ant Design Vue 主题配置（企业蓝稳重风）
- * 与 src/styles/tokens.css 中的设计变量保持一致。
- */
+/** Ant Design Vue 主题配置，需与 src/styles/tokens.css 的设计变量保持一致 */
 export const themeConfig = {
   token: {
     colorPrimary: '#2563eb',

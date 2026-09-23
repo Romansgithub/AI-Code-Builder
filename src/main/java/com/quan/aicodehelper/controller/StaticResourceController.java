@@ -25,10 +25,8 @@ import java.nio.charset.StandardCharsets;
 public class StaticResourceController {
 
     /**
-     * 预览根目录。
-     *
-     * <p>不做成 static final：路径由 StorageProperties 在启动时回填，
-     * 类加载期固化会导致注入的配置失效（同时也不利于单测替换）。</p>
+     * 预览根目录。路径由 StorageProperties 在启动时回填，不能固化成 static final，
+     * 否则类加载期就取值会让注入的配置失效。
      */
     private String previewRootDir() {
         return AppConstant.getCodeOutputRootDir();
@@ -38,9 +36,7 @@ public class StaticResourceController {
     public ResponseEntity<Resource> serveStaticResource(@PathVariable String deployKey, HttpServletRequest request){
         try{
             String resourcePath = resolveResourcePath(deployKey, request);
-            // 统一收敛：空路径以及纯斜杠（/、//）一律视为目录根，直接映射到 index.html。
-            // 注意：这里刻意不做 301 重定向 —— 旧实现重定向到 xxx// 会产生双斜杠，
-            // 再次进入时既不等同于 "/" 也找不到对应文件，最终表现为 404/500。
+            // 空路径与纯斜杠都收敛到 index.html；不能改成 301 重定向，否则会拼出 xxx// 导致后续 404
             if (resourcePath == null) {
                 return ResponseEntity.notFound().build();
             }
@@ -73,15 +69,10 @@ public class StaticResourceController {
     }
 
     /**
-     * 从请求中解析出「相对于 deployKey 目录」的资源路径。
+     * 从请求中解析出「相对于 deployKey 目录」的资源路径。按 deployKey 的实际出现位置切割，
+     * 不用 URI 长度偏移：context-path 长度一变，偏移量就会错位并吃掉路径首字符。
      *
-     * <p>历史坑：旧实现用 {@code getRequestURI().substring(("/static/" + deployKey).length())}
-     * 计算偏移量，一旦中间插入了 context-path 处理（或 context-path 长度变化），
-     * 偏移量就会与实际不符，把路径首字符吃掉，导致 index.html 分支失效。
-     * 因此这里改为「按 deployKey 的实际出现位置切割」，不依赖任何固定长度。</p>
-     *
-     * @return 资源相对路径（形如 {@code "/index.html"}、{@code "/assets/app.js"}）；
-     *         若 URI 中不含 deployKey（异常请求）返回 {@code null}
+     * @return 形如 {@code "/index.html"}；URI 中不含 deployKey（异常请求）时返回 {@code null}
      */
     String resolveResourcePath(String deployKey, HttpServletRequest request) {
         String uri = request.getRequestURI();
@@ -98,13 +89,8 @@ public class StaticResourceController {
     }
 
     /**
-     * 根据扩展名返回 Content-Type。
-     *
-     * <p>历史问题：早期只覆盖 html/css/js/png/jpg，其余一律 application/octet-stream。
-     * Vue 构建产物里的 {@code .svg}、{@code .woff2}、{@code .json} 等一旦被标为
-     * octet-stream，浏览器会拒绝按类型加载（字体不显示、SVG 挂图），必须补全。</p>
-     *
-     * <p>文本类统一声明 charset=UTF-8，避免中文页面乱码。</p>
+     * 按扩展名返回 Content-Type。需覆盖 svg/woff2/json 等：标成 octet-stream 会让浏览器
+     * 拒绝加载（字体不显示、SVG 挂图）。文本类统一声明 charset=UTF-8 避免中文乱码。
      */
     String getContentTypeWithCharset(String filePath) {
         String lower = filePath.toLowerCase();

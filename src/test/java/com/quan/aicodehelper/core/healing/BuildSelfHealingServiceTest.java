@@ -33,14 +33,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 构建自愈循环测试。
- *
- * <p>构建动作本身（调 npm）不适合单测，因此这里 mock 掉 {@link VueProjectBuilder}
- * 与 AI 服务，专注验证<b>决策逻辑</b>：该不该重试、重试几次、什么时候必须停。</p>
- *
- * <p>注意 mock 的是 {@link AiCodeHealingService}（自愈专用服务）而不是生成服务 ——
- * 这个区别本身就是一次事故的修复结果：自愈若走生成服务，会连带继承那道
- * 「用户输入 ≤1000 字」的护栏，把构建报错当成超长用户输入拒掉。</p>
+ * 构建自愈循环测试：mock 掉构建器与 AI 服务，专注验证重试决策逻辑。
+ * mock 的是 {@link AiCodeHealingService} 而非生成服务，后者带「用户输入 ≤1000 字」护栏。
  */
 @DisplayName("构建自愈服务")
 class BuildSelfHealingServiceTest {
@@ -71,7 +65,6 @@ class BuildSelfHealingServiceTest {
         when(healingService.healVueProjectBuildFailure(anyLong(), anyString()))
                 .thenReturn(Flux.just("已修复"));
 
-        // 收集进度消息
         org.mockito.Mockito.doAnswer(inv -> {
             emittedMessages.add(inv.getArgument(1));
             return null;
@@ -89,8 +82,7 @@ class BuildSelfHealingServiceTest {
         ReflectionTestUtils.setField(service, "selfHealingProperties", props);
         ReflectionTestUtils.setField(service, "generationProgressRegistry", progressRegistry);
 
-        // 默认给一个上限充足的真实闸门：这些用例关注的是重试决策逻辑，
-        // 不该被预算逻辑干扰。预算相关的行为在专属嵌套类里单独验证。
+        // 上限充足的真实闸门；预算行为在专属嵌套类里单独验证
         LlmBudgetProperties budgetProps = new LlmBudgetProperties();
         budgetProps.setMaxCalls(1000);
         llmCallGuard = new LlmCallGuard(budgetProps);
@@ -102,7 +94,6 @@ class BuildSelfHealingServiceTest {
                 "error: Cannot find module './Missing.vue'", "raw output");
     }
 
-    /** 断言自愈调用 AI 的次数 */
     private void verifyHealCalls(int expected) {
         verify(healingService, times(expected))
                 .healVueProjectBuildFailure(anyLong(), anyString());
@@ -226,7 +217,6 @@ class BuildSelfHealingServiceTest {
             BuildResult result = service.buildWithHealing(PROJECT_PATH, APP_ID);
 
             assertThat(result.isSuccess()).isFalse();
-            // maxAttempts = 2
             verifyHealCalls(2);
             // 初次构建 + 2 次重试 = 3 次
             verify(vueProjectBuilder, times(3)).buildProjectWithResult(anyString(), anyLong());
@@ -310,10 +300,8 @@ class BuildSelfHealingServiceTest {
         @Test
         @DisplayName("确定性失败必须立刻中止，绝不能再试一轮")
         void shouldAbortImmediatelyOnDeterministicFailure() {
-            // 这是本组最关键的一条。原先 catch (Exception) 一律返回「这轮没修好」，
-            // 而它的语义在外层是 continue —— 于是任何确定性失败（输入校验、
-            // 护栏拒绝、参数非法）都会把剩余轮次空转烧完：用户多等一轮、
-            // 日志里多几条「继续重试」、报告里多两轮并不存在的修复记录。
+            // catch (Exception) 一律返回「这轮没修好」，语义在外层是 continue，
+            // 于是任何确定性失败（输入校验、护栏拒绝、参数非法）都会把剩余轮次空转烧完。
             when(vueProjectBuilder.buildProjectWithResult(eq(PROJECT_PATH), eq(APP_ID)))
                     .thenReturn(compileError());
             when(healingService.healVueProjectBuildFailure(anyLong(), anyString()))
@@ -346,9 +334,7 @@ class BuildSelfHealingServiceTest {
         @Test
         @DisplayName("中止的轮次必须计入 healingAttempts —— 否则失败样本会从自愈成功率里静默消失")
         void shouldCountAbortedAttempt() {
-            // 若这里返回 0 轮，评测汇总就看不到「触发过自愈」，
-            // 报告会显示「本次无用例触发自愈」，而实情是自愈被触发后一个字都没改。
-            // 宁可比率难看，也不能让最差的那批样本从分子分母里双双消失。
+            // 返回 0 轮会让报告显示「本次无用例触发自愈」，而实情是自愈被触发后一个字都没改
             when(vueProjectBuilder.buildProjectWithResult(eq(PROJECT_PATH), eq(APP_ID)))
                     .thenReturn(compileError());
             when(healingService.healVueProjectBuildFailure(anyLong(), anyString()))
@@ -400,9 +386,7 @@ class BuildSelfHealingServiceTest {
         @Test
         @DisplayName("user 消息长度只随报错增长：超长报错必须被截断到 maxErrorLength 附近")
         void shouldTruncateOverlongErrorMessage() {
-            // maxErrorLength 原先只在走报错提取器兜底时才生效，而 BuildResult.errorMessage
-            // 是构建器用不带长度上限的提取方法生成的 —— 也就是说这条配置在最常见的
-            // 路径上根本没生效。这里用一个远超上限的报错把它锁死。
+            // BuildResult.errorMessage 由不带长度上限的方法生成，maxErrorLength 原本不生效
             SelfHealingProperties props = new SelfHealingProperties();
             props.setEnabled(true);
             props.setMaxAttempts(1);
@@ -489,9 +473,7 @@ class BuildSelfHealingServiceTest {
     @DisplayName("LLM 预算耗尽")
     class BudgetExhausted {
 
-        /**
-         * 把闸门换成已耗尽的状态。
-         */
+        /** 把闸门换成已耗尽的状态 */
         private void exhaustBudget() {
             LlmBudgetProperties props = new LlmBudgetProperties();
             props.setMaxCalls(1);
@@ -503,10 +485,8 @@ class BuildSelfHealingServiceTest {
         @Test
         @DisplayName("预算耗尽时必须立刻中止自愈循环，而不是当作「这轮没修好」继续重试")
         void shouldAbortLoopImmediately() {
-            // 这是本组最关键的一条。askAiToFix 原本吞掉所有异常并返回 false，
-            // 而 false 的语义在外层是「继续下一轮」。若预算异常被吞掉，
-            // 外层会拿已经耗尽的预算把剩余重试次数在一次热循环里烧完 ——
-            // 每次都失败、每次都继续，用户看到的是「一直在修复」但什么都没发生。
+            // askAiToFix 若吞掉预算异常并返回 false，外层语义是「继续下一轮」，
+            // 会用已耗尽的预算在一次热循环里把剩余重试次数烧完，用户看到「一直在修复」却什么都没发生。
             exhaustBudget();
             when(vueProjectBuilder.buildProjectWithResult(eq(PROJECT_PATH), eq(APP_ID)))
                     .thenReturn(compileError());

@@ -2,12 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { parseSseChunk } from './sseStream'
 
 /**
- * SSE 解析器的边界测试。
- *
- * <p>为什么值得为几十行代码写这么多用例：解析器是纯函数，但它面对的输入是
- * 「TCP 分片」这种不可控的东西。一旦分片边界猜错，表现是在真实网络抖动时
- * 偶发乱码或丢事件 —— 本地全绿、线上偶发，是最难查的一类 bug。
- * 这里把每个边界钉死，让「猜」变成「断言」。</p>
+ * SSE 解析器的边界测试。输入来自不可控的 TCP 分片，分片边界猜错只会在
+ * 真实网络抖动时偶发乱码或丢事件，所以每个边界都钉成断言。
  */
 describe('parseSseChunk', () => {
   describe('基本解析', () => {
@@ -65,7 +61,6 @@ describe('parseSseChunk', () => {
       expect(first.messages).toEqual([])
       expect(first.rest).toBe('data: a\n')
 
-      // 第二次补齐空行，事件才成形
       const second = parseSseChunk(first.rest + '\n')
       expect(second.messages).toHaveLength(1)
       expect(second.messages[0].data).toBe('a')
@@ -159,8 +154,7 @@ describe('parseSseChunk', () => {
     })
 
     it('只带 id 或 event 的块是真事件，不能因 data 为空被误杀', () => {
-      // 这条用来卡住「过滤注释块」的修法：不能简单改成「data 为空就丢弃」，
-      // 否则纯 id/event 块这类合法事件会被吞掉
+      // 不能简化成「data 为空就丢弃」：纯 id/event 块是合法事件，会被吞掉
       const withId = parseSseChunk('id: 9\n\n')
       expect(withId.messages).toHaveLength(1)
       expect(withId.messages[0]).toEqual({ id: '9', event: 'message', data: '' })

@@ -19,11 +19,7 @@ import java.net.UnknownHostException;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 降级触发条件测试。
- *
- * <p>这组用例的价值在于把「什么该降级、什么不该」这条判断固化下来。
- * 它极易在后续开发中被改坏 —— 比如有人为了「更稳」把所有异常都放行降级，
- * 测试会立刻指出「业务语义失败不该降级」。</p>
+ * 降级触发条件测试：固化「什么该降级、什么不该」的判断，防止后续被人改坏。
  */
 @DisplayName("降级失败分类器")
 class FallbackFailureClassifierTest {
@@ -53,10 +49,8 @@ class FallbackFailureClassifierTest {
         @Test
         @DisplayName("鉴权失败必须降级 —— 它继承 NonRetriableException，但不能因此放弃")
         void authentication() {
-            // 这是本组最关键的一条。LangChain4j 把 AuthenticationException 归为
-            // NonRetriableException（重试同一个 key 确实没用），但对「换个 key」
-            // 而言它恰恰是最该降级的场景 —— 额度耗尽通常就是这样返回的。
-            // 若直接照搬 LangChain4j 的分类，这个最实用的降级能力就丢了。
+            // LangChain4j 把 AuthenticationException 归为 NonRetriable，但对「换 key」而言
+            // 它最该降级（额度耗尽常这样返回），照搬分类会丢能力
             assertThat(FallbackFailureClassifier.shouldFallback(new AuthenticationException("401"))).isTrue();
         }
 

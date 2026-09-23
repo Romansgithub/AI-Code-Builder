@@ -27,17 +27,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * 评测产物路径契约测试。
- *
- * <p><b>为什么必须有这一组</b>：2026-09-20 跑批 8 条用例全判失败，日志里却写着
- * 「Vue 项目构建成功」。原因是「写盘的一方」（{@code FileWriteTool} /
- * {@code CodeFileSaverTemplate}，按 {@code {type}_{appId}} 落盘）和
- * 「读盘的一方」（{@code EvalRunner}，当时自己发明了 {@code eval-run/{type}_{caseId}}）
- * 各自算路径，两条路径没有任何交集。</p>
- *
- * <p>当时 263 个测试全绿也没拦住 —— 因为没有一个测试把「生成侧落盘位置」与
- * 「评测侧读取位置」放在一起断言。这个类就是补这个洞：<b>凡是涉及两方约定路径的，
- * 必须有一条测试同时校验两端。</b></p>
+ * 评测产物路径契约测试。写盘侧（{@code FileWriteTool} / {@code CodeFileSaverTemplate}）与读盘侧
+ * （{@code EvalRunner}）各自算路径，凡涉及两方约定路径的，必须有一条测试同时校验两端。
  */
 @DisplayName("评测产物路径契约")
 class EvalOutputPathContractTest {
@@ -93,7 +84,6 @@ class EvalOutputPathContractTest {
                 try {
                     Files.deleteIfExists(p);
                 } catch (Exception ignored) {
-                    // 清理失败不影响断言
                 }
             });
         } catch (Exception ignored) {
@@ -123,9 +113,7 @@ class EvalOutputPathContractTest {
         @Test
         @DisplayName("HTML 用例：按生产命名 {type}_{appId} 落在 eval-run 下的文件，应被判为通过")
         void shouldFindHtmlArtifactByProductionNaming() {
-            // 模拟生成侧行为：评测跑批期间，保存器会按 {type}_{appId} 落盘。
-            // 这里在 generateCodeStream 被调用时，用「调用方传入的 appId」在
-            // 当前产物根下造出与生产完全一致的文件。
+            // 模拟生成侧：按 {type}_{appId} 在当前产物根下落盘，与生产一致
             when(facade.generateCodeStream(anyString(), any(), anyLong()))
                     .thenAnswer(inv -> {
                         Long appId = inv.getArgument(2);
@@ -176,9 +164,8 @@ class EvalOutputPathContractTest {
         @Test
         @DisplayName("Vue 用例：构建器收到的目录，就是模型写盘工具会写入的目录")
         void shouldBuildVueFromSameDirModelWritesTo() {
-            // 这条是本次事故的核心：Vue 模式下模型通过 FileWriteTool 写盘，
-            // 而 FileWriteTool 拼的是 codeOutputRootDir/{VUE_PROJECT}_{appId}。
-            // 因此评测传给构建器的目录必须与之完全一致。
+            // Vue 模式下模型通过 FileWriteTool 写盘，它拼的是
+            // codeOutputRootDir/{VUE_PROJECT}_{appId}，构建目录必须与之完全一致。
             java.util.concurrent.atomic.AtomicReference<String> modelWriteDir =
                     new java.util.concurrent.atomic.AtomicReference<>();
             java.util.concurrent.atomic.AtomicReference<String> buildDir =
@@ -200,7 +187,6 @@ class EvalOutputPathContractTest {
                         return Flux.just("done");
                     });
 
-            // 模拟构建器：记录它被要求构建哪个目录
             com.quan.aicodehelper.core.healing.BuildSelfHealingService healing =
                     mock(com.quan.aicodehelper.core.healing.BuildSelfHealingService.class);
             when(healing.buildWithHealingOutcome(anyString(), anyLong()))
@@ -224,17 +210,14 @@ class EvalOutputPathContractTest {
         @Test
         @DisplayName("Vue 用例：产物统计必须覆盖 AI 生成的源码，不能恒为 0")
         void shouldMeasureVueSourceNotDist() {
-            // 回归背景：修路径时曾把「统计 dist 目录」传进 measureOutput，
-            // 而该方法本身排除 dist → 每个文件都命中排除规则 → 产物恒为
-            // 「0个文件/0.0KB」。报告里 Vue 三条全是 0，看着像没生成东西，
-            // 实际代码好端端躺在项目里。
+            // measureOutput 自身排除 dist，若把 dist 目录传进去，产物会恒为 0
             when(facade.generateCodeStream(anyString(), any(), anyLong()))
                     .thenAnswer(inv -> {
                         Long appId = inv.getArgument(2);
                         String dir = AppConstant.getCodeOutputRootDir() + File.separator
                                 + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
                         FileUtil.mkdir(dir);
-                        // AI 生成的三份源码/配置 —— 这才是要统计的东西
+                        // AI 生成的源码/配置，才是要统计的东西
                         FileUtil.writeString("{\"name\":\"x\"}",
                                 dir + File.separator + "package.json", "utf-8");
                         FileUtil.mkdir(dir + File.separator + "src");
@@ -278,10 +261,7 @@ class EvalOutputPathContractTest {
     @DisplayName("故障注入")
     class FaultInjectionExecution {
 
-        /**
-         * 造一个「模型刚生成完」的 Vue 工程：App.vue 里按常规写法导入组件。
-         * 注入的目标就是把这个导入路径改坏。
-         */
+        /** 造一个「模型刚生成完」的 Vue 工程，供注入改坏导入路径 */
         private void stubGeneratedVueProject() {
             when(facade.generateCodeStream(anyString(), any(), anyLong()))
                     .thenAnswer(inv -> {
@@ -349,16 +329,13 @@ class EvalOutputPathContractTest {
         @Test
         @DisplayName("注入失败必须显式报错，绝不能静默跳过产出假数据")
         void shouldFailLoudlyWhenFindStringMissing() {
-            // 模型改用了别的导入写法 → find 串找不到。此处若静默跳过，
-            // 首轮大概率直接构建通过，报告上显示一条漂亮的「一次通过」，
-            // 而这条用例存在的唯一意义已经消失。
+            // find 串找不到时若静默跳过，首轮会直接构建通过，报告显示一条假的「一次通过」
             when(facade.generateCodeStream(anyString(), any(), anyLong()))
                     .thenAnswer(inv -> {
                         Long appId = inv.getArgument(2);
                         String dir = AppConstant.getCodeOutputRootDir() + File.separator
                                 + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
                         FileUtil.mkdir(dir + File.separator + "src");
-                        // 只写一个不含目标串的 App.vue
                         FileUtil.writeString("<script setup>// 没有组件导入</script>\n",
                                 dir + File.separator + "src" + File.separator + "App.vue", "utf-8");
                         return Flux.just("done");
@@ -389,7 +366,6 @@ class EvalOutputPathContractTest {
             when(facade.generateCodeStream(anyString(), any(), anyLong()))
                     .thenAnswer(inv -> {
                         Long appId = inv.getArgument(2);
-                        // 只建目录与 package.json，不写 App.vue
                         String dir = AppConstant.getCodeOutputRootDir() + File.separator
                                 + CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId;
                         FileUtil.mkdir(dir);
@@ -434,8 +410,7 @@ class EvalOutputPathContractTest {
         @Test
         @DisplayName("file 留空时应自动定位到含目标串的文件 —— 哪怕它不在 App.vue")
         void shouldAutoLocateFileWhenBlank() {
-            // 复刻实跑时的情况：组件 import 写在 pages/Home.vue，App.vue 里只有路由出口。
-            // 写死 src/App.vue 的配置在这种工程上会 100% 注入失败。
+            // 组件 import 可能写在 pages/Home.vue；写死 src/App.vue 会 100% 注入失败
             when(facade.generateCodeStream(anyString(), any(), anyLong()))
                     .thenAnswer(inv -> {
                         Long appId = inv.getArgument(2);
@@ -541,8 +516,7 @@ class EvalOutputPathContractTest {
                         FileUtil.mkdir(dir + File.separator + "src");
                         FileUtil.writeString("<script setup>// 模型没写组件导入</script>\n",
                                 dir + File.separator + "src" + File.separator + "App.vue", "utf-8");
-                        // 依赖里造一个含目标串的文件：扫描若不限定 src，会误改依赖，
-                        // 构建失败的原因就跑偏了
+                        // 依赖里放一个含目标串的文件：扫描若不限定 src 会误改依赖
                         FileUtil.mkdir(dir + File.separator + "node_modules" + File.separator + "dep");
                         FileUtil.writeString("import x from '@/components/Dep.vue'\n",
                                 dir + File.separator + "node_modules" + File.separator + "dep"
@@ -594,8 +568,7 @@ class EvalOutputPathContractTest {
 
             EvalRunResult result = runner.run();
 
-            // 早先的实现里，executeSimpleCase 又调了一次带 FileUtil.clean 的路径计算，
-            // 结果把刚落盘的文件删掉、再判成 MISSING_DIST —— 这里锁死不再发生。
+            // 读产物时再清一次目录会把刚落盘的文件删掉、判成 MISSING_DIST，这里锁死
             assertThat(result.getCases().get(0).isFinalPassed()).isTrue();
             assertThat(result.getCases().get(0).getFailureType()).isNull();
         }
@@ -620,7 +593,7 @@ class EvalOutputPathContractTest {
             assertThat(result.getCases().get(0).isFinalPassed()).isFalse();
             assertThat(result.getCases().get(0).getFailureType()).isEqualTo("MISSING_DIST");
 
-            // 关键：把上次的「残留产物」塞回去再跑一次 —— 若不清目录，会被误判为通过
+            // 把上次的残留产物塞回去再跑一次：若不清目录会被误判为通过
             when(facade.generateCodeStream(anyString(), any(), anyLong()))
                     .thenAnswer(inv -> {
                         Long appId = inv.getArgument(2);
@@ -657,7 +630,6 @@ class EvalOutputPathContractTest {
 
             when(facade.generateCodeStream(anyString(), any(), anyLong()))
                     .thenAnswer(inv -> {
-                        // 断言「跑批期间」产物根确实被切到了 eval-run 下
                         assertThat(AppConstant.getCodeOutputRootDir())
                                 .isEqualTo(before + File.separator + "eval-run");
                         Long appId = inv.getArgument(2);

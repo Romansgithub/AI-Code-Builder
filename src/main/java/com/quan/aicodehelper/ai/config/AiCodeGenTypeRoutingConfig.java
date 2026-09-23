@@ -13,9 +13,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Scope;
 
-/**
- * AI代码生成类型路由配置
- */
 @Configuration
 @ConfigurationProperties(prefix = "langchain4j.open-ai.routing-chat-model")
 @Slf4j

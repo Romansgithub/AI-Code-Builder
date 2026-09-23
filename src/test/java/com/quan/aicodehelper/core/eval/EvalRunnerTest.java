@@ -22,11 +22,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 跑批执行器测试。
- *
- * <p>真实跑批要调 AI 并跑 npm，无法在单测里跑完。因此这里聚焦两个
- * 「出错时会不会把整轮拖垮」的行为，以及开关校验 —— 跑批流程的正确性
- * 由 {@link EvalRunResultTest} 覆盖的汇总逻辑保证。</p>
+ * 跑批执行器测试：聚焦「出错时会不会把整轮拖垮」与开关校验；汇总逻辑由 {@link EvalRunResultTest} 覆盖。
  */
 @DisplayName("评测跑批执行器")
 class EvalRunnerTest {
@@ -81,7 +77,6 @@ class EvalRunnerTest {
         @DisplayName("用例卡住不动时应按超时记失败，而不是让整轮跑批无限等")
         void shouldMarkTimeoutAndContinue() {
             props.setEnabled(true);
-            // 超时设 1 秒，方便测试
             props.setCaseTimeoutSeconds(1);
             props.init();
 
@@ -105,7 +100,7 @@ class EvalRunnerTest {
             EvalRunResult result = runner.run();
             long cost = System.currentTimeMillis() - startedAt;
 
-            // 关键：没有挂死在用例上，在超时附近就返回了
+            // 没有挂死在用例上，在超时附近就返回了
             assertThat(cost).isLessThan(15_000L);
             assertThat(result.getCases()).hasSize(1);
             EvalRunResult.CaseResult cr = result.getCases().get(0);
@@ -119,9 +114,7 @@ class EvalRunnerTest {
     @DisplayName("单用例开关")
     class CaseFilter {
 
-        /**
-         * 造一个含两条 HTML 用例的评测集。
-         */
+        /** 造一个含两条 HTML 用例的评测集 */
         private com.quan.aicodehelper.model.dto.eval.EvalSet twoCases() {
             com.quan.aicodehelper.model.dto.eval.EvalSet set =
                     new com.quan.aicodehelper.model.dto.eval.EvalSet();
@@ -155,7 +148,7 @@ class EvalRunnerTest {
 
             assertThat(result.getCases()).hasSize(1);
             assertThat(result.getCases().get(0).getCaseId()).isEqualTo("vue-healing-trigger");
-            // 另一条用例一次都不该被跑到 —— 这正是省下 token 的地方
+            // 另一条用例一次都不该被跑到，token 就省在这里
             verify(facade, times(1)).generateCodeStream(anyString(), any(), anyLong());
         }
 

@@ -19,14 +19,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 检索召回评测 控制层。
+ * 检索召回评测 控制层（限管理员：全量消融会产生数十次 embedding 调用，属于烧额度的动作）。
  *
- * <p>与 {@link EvalController} 分开而不是加在它下面：两者度量的是不同东西
- * （生成质量 vs 检索质量），生命周期也不同 —— 生成评测会真实调用 AI 并跑 npm 构建，
- * 检索评测只走索引与向量化。混在一个控制器里，调用方很难从路径看出
- * 「这一下要花多少时间、会动到哪些数据」。</p>
- *
- * <p>同样限管理员：跑一轮全量消融会产生数十次 embedding 调用，属于烧额度的动作。</p>
+ * <p>与 {@link EvalController} 分开：两者度量的东西与代价都不同（生成评测真实调 AI 并跑 npm 构建，
+ * 检索评测只走索引与向量化），混在一起调用方无法从路径判断耗时与影响范围。</p>
  */
 @Slf4j
 @RestController
@@ -41,10 +37,7 @@ public class RagEvalController {
     private RagEvalSetLoader ragEvalSetLoader;
 
     /**
-     * 查看当前检索评测集。
-     *
-     * <p>跑之前先看一眼用例是必要的 —— 尤其是期望文件的标注，
-     * 标注写错的评测集跑出来的数字是错的，而错误的指标比没有指标更危险。</p>
+     * 查看当前检索评测集。跑前应先验用例标注，标注写错会得出错误指标，比没有指标更危险。
      */
     @GetMapping("/set")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
@@ -54,14 +47,9 @@ public class RagEvalController {
     }
 
     /**
-     * 触发一轮检索召回评测。
+     * 触发一轮检索召回评测，同步返回（全量消融约 1 分钟内，不做异步任务化）。
      *
-     * <p>同步返回：一轮全量消融约 1 分钟内（索引首次建好后更快），
-     * 仍在常规请求可接受的范围内，不做异步任务化。</p>
-     *
-     * @param ablation 是否跑三组权重消融，默认 true。每条用例检索一次就要一次
-     *                 embedding 调用，三组即三倍开销；只想确认「有没有变差」时
-     *                 传 {@code false} 只跑线上生效的那组权重
+     * @param ablation 是否跑三组权重消融，默认 true；每组用例一次 embedding 调用，三组即三倍开销，只想确认是否变差时传 false
      */
     @PostMapping("/run")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)

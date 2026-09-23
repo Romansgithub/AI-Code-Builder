@@ -12,13 +12,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 /**
- * 存储与部署相关配置。
- *
- * <p>历史问题：这些值原先硬编码在 {@link AppConstant} 里，其中根目录用
- * {@code System.getProperty("user.dir")} 推算 —— 该值等于「JVM 进程的工作目录」，
- * 而非「项目所在目录」。IDEA 运行配置里的 Working directory 一旦不是模块根，
- * 产物就会落到意料之外的位置。改为可配置项后，默认行为保持不变（仍按 user.dir 推算），
- * 但可通过配置文件或环境变量覆盖。</p>
+ * 存储与部署相关配置。根目录不再用 System.getProperty("user.dir") 推算
+ * （那是 JVM 工作目录而非项目目录，IDEA 的 Working directory 一变产物就落到意外位置），改为可配置项。
  */
 @Slf4j
 @Data
@@ -55,8 +50,7 @@ public class StorageProperties {
         if (deployHost == null || deployHost.isBlank()) {
             deployHost = "http://localhost:8080/api/static/";
         }
-        // 统一补尾斜杠：预览页 index.html 使用相对路径 "./assets/xxx"，
-        // 缺少尾斜杠时浏览器会把 deployKey 当作文件名，相对路径基准错位，静态资源全部 404。
+        // 统一补尾斜杠：预览页 index.html 用相对路径 "./assets/xxx"，缺尾斜杠时浏览器会把 deployKey 当文件名、静态资源全 404
         if (!deployHost.endsWith("/")) {
             deployHost = deployHost + "/";
         }
@@ -67,16 +61,10 @@ public class StorageProperties {
                 codeOutputDir, codeDeployDir, deployHost);
     }
 
-    /**
-     * 代码生成产物根目录（Path 形式）。
-     */
     public Path codeOutputPath() {
         return Paths.get(codeOutputDir).toAbsolutePath().normalize();
     }
 
-    /**
-     * 部署产物根目录（Path 形式）。
-     */
     public Path codeDeployPath() {
         return Paths.get(codeDeployDir).toAbsolutePath().normalize();
     }
@@ -84,16 +72,12 @@ public class StorageProperties {
     /**
      * 拼接某个应用部署后的完整访问地址。
      *
-     * @param deployKey 部署标识
      * @return 形如 {@code http://localhost:8080/api/static/AbC123/}，始终带尾斜杠
      */
     public String buildDeployUrl(String deployKey) {
         return deployHost + deployKey + "/";
     }
 
-    /**
-     * 确保根目录存在（首次运行时目录通常尚未创建）。
-     */
     public void ensureDirectories() {
         for (Path p : new Path[]{codeOutputPath(), codeDeployPath()}) {
             File dir = p.toFile();

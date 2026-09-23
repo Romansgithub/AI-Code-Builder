@@ -14,10 +14,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
-/**
- * 文件读取工具
- * 支持 AI 通过工具调用的方式读取文件内容
- */
 @Slf4j
 @Component
 public class FileReadTool extends BaseTool{

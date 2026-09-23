@@ -80,7 +80,6 @@
         </a-form>
       </a-card>
 
-      <!-- 应用信息展示 -->
       <a-card title="应用信息" style="margin-top: 24px">
         <a-descriptions :column="2" bordered>
           <a-descriptions-item label="应用ID">
@@ -125,13 +124,11 @@ const route = useRoute()
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
 
-// 应用信息
 const appInfo = ref<API.AppVO>()
 const loading = ref(false)
 const submitting = ref(false)
 const formRef = ref<FormInstance>()
 
-// 表单数据
 const formData = reactive({
   appName: '',
   cover: '',
@@ -140,12 +137,10 @@ const formData = reactive({
   deployKey: '',
 })
 
-// 是否为管理员
 const isAdmin = computed(() => {
   return loginUserStore.loginUser.userRole === 'admin'
 })
 
-// 表单验证规则
 const rules = {
   appName: [
     { required: true, message: '请输入应用名称', trigger: 'blur' },
@@ -155,7 +150,6 @@ const rules = {
   priority: [{ type: 'number', min: 0, max: 99, message: '优先级范围0-99', trigger: 'blur' }],
 }
 
-// 获取应用信息
 const fetchAppInfo = async () => {
   const id = route.params.id as string
   if (!id) {
@@ -170,14 +164,12 @@ const fetchAppInfo = async () => {
     if (res.data.code === 0 && res.data.data) {
       appInfo.value = res.data.data
 
-      // 检查权限
       if (!isAdmin.value && appInfo.value.userId !== loginUserStore.loginUser.id) {
         message.error('您没有权限编辑此应用')
         router.push('/')
         return
       }
 
-      // 填充表单数据
       formData.appName = appInfo.value.appName || ''
       formData.cover = appInfo.value.cover || ''
       formData.priority = appInfo.value.priority || 0
@@ -196,7 +188,6 @@ const fetchAppInfo = async () => {
   }
 }
 
-// 提交表单
 const handleSubmit = async () => {
   if (!appInfo.value?.id) return
 
@@ -204,7 +195,6 @@ const handleSubmit = async () => {
   try {
     let res
     if (isAdmin.value) {
-      // 管理员可以修改更多字段
       res = await updateAppByAdmin({
         id: appInfo.value.id,
         appName: formData.appName,
@@ -212,7 +202,6 @@ const handleSubmit = async () => {
         priority: formData.priority,
       })
     } else {
-      // 普通用户只能修改应用名称
       res = await updateApp({
         id: appInfo.value.id,
         appName: formData.appName,
@@ -221,7 +210,6 @@ const handleSubmit = async () => {
 
     if (res.data.code === 0) {
       message.success('修改成功')
-      // 重新获取应用信息
       await fetchAppInfo()
     } else {
       message.error('修改失败：' + res.data.message)
@@ -234,7 +222,6 @@ const handleSubmit = async () => {
   }
 }
 
-// 重置表单
 const resetForm = () => {
   if (appInfo.value) {
     formData.appName = appInfo.value.appName || ''
@@ -244,14 +231,12 @@ const resetForm = () => {
   formRef.value?.clearValidate()
 }
 
-// 进入对话页面
 const goToChat = () => {
   if (appInfo.value?.id) {
     router.push(`/app/chat/${appInfo.value.id}`)
   }
 }
 
-// 打开预览
 const openPreview = () => {
   if (appInfo.value?.codeGenType && appInfo.value?.id) {
     const url = getStaticPreviewUrl(appInfo.value.codeGenType, String(appInfo.value.id))
@@ -259,7 +244,6 @@ const openPreview = () => {
   }
 }
 
-// 页面加载时获取应用信息
 onMounted(() => {
   fetchAppInfo()
 })

@@ -17,20 +17,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 评测集加载测试。
- *
- * <p>重点是「默认那份评测集真的能加载」+「坏数据必须被拦住」。
- * 前者防止改 JSON 时手滑（比如枚举值写错），后者防止错误数据
- * 悄悄产出看起来合理的错误指标。</p>
+ * 评测集加载测试。默认那份要真能加载，防止改 JSON 时手滑（如枚举值写错）；
+ * 坏数据必须被拦住，防止悄悄产出看起来合理的错误指标。
  */
 @DisplayName("评测集加载器")
 class EvalSetLoaderTest {
 
     private EvalSetLoader loader;
 
-    /**
-     * 用临时文件承载 JSON 内容，走真实的「读资源 + 解析 + 校验」路径。
-     */
+    /** 用临时文件承载 JSON，走真实的「读资源 + 解析 + 校验」路径 */
     private EvalSet parseWith(String json) {
         java.nio.file.Path dir;
         java.nio.file.Path file;
@@ -53,9 +48,7 @@ class EvalSetLoaderTest {
         }
     }
 
-    /**
-     * 递归删除临时目录。清理失败不影响断言，因此异常一律吞掉。
-     */
+    /** 递归删除临时目录，清理失败不影响断言 */
     private static void deleteRecursively(java.nio.file.Path dir) {
         try (var walk = java.nio.file.Files.walk(dir)) {
             walk.sorted((a, b) -> b.getNameCount() - a.getNameCount())
@@ -63,11 +56,9 @@ class EvalSetLoaderTest {
                         try {
                             java.nio.file.Files.deleteIfExists(x);
                         } catch (Exception ignored) {
-                            // 测试清理失败无需中断用例
                         }
                     });
         } catch (Exception ignored) {
-            // 同上
         }
     }
 
@@ -254,9 +245,7 @@ class EvalSetLoaderTest {
 
             for (EvalCase c : withInjection) {
                 EvalCase.FaultInjection fi = c.getFaultInjection();
-                // 这里钉死「模型写的是别名导入」这个实测事实。历史上 find 串曾写成
-                // from './components/（相对路径），而模型实际一律写 @/components/
-                // （13/13），命中率 0% —— 注入从未生效，整条自愈链路等于没验证过。
+                // 模型一律写 @/components/ 别名导入，find 串写成 './components/' 会 100% 不命中
                 assertThat(fi.getFind())
                         .as("模型实测一律使用 @ 别名导入；写成相对路径会 100% 不命中")
                         .contains("@/components/");
@@ -344,8 +333,7 @@ class EvalSetLoaderTest {
                        "faultInjection":{"file":"src/App.vue"}}]}
                     """;
 
-            // 宽容处理会让注入被静默跳过 → 首轮直接通过 → 报告显示漂亮数据，
-            // 而这条用例存在的唯一意义（验证自愈）已经悄悄消失。
+            // 宽容处理会让注入被静默跳过：首轮直接通过、报告显示漂亮数据，而验证自愈的意义消失了
             assertThatThrownBy(() -> parseWith(json))
                     .isInstanceOf(BusinessException.class)
                     .hasMessageContaining("faultInjection 缺少字段")

@@ -26,11 +26,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * 评测报告服务测试。
- *
- * <p>这个类的职责是「把 SQL 聚合结果翻译成带比率的视图对象」。
- * 翻译错的地方不会报错、只会给出看着合理的错误数字，所以重点验证：
- * 除零处理、null 语义、以及驱动返回类型不统一时的数值转换。</p>
+ * 评测报告服务测试：把 SQL 聚合结果翻译成带比率的视图对象，重点验证除零、
+ * null 语义与驱动返回类型不统一时的数值转换。
  */
 @DisplayName("评测报告服务")
 class EvalReportServiceTest {

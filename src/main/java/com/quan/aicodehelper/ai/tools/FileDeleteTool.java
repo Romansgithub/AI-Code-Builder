@@ -13,10 +13,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
-/**
- * 文件删除工具
- * 支持 AI 通过工具调用的方式删除文件
- */
 @Component
 @Slf4j
 public class FileDeleteTool extends BaseTool{
@@ -40,7 +36,6 @@ public class FileDeleteTool extends BaseTool{
             if (!Files.isRegularFile(path)) {
                 return "错误：指定路径不是文件，无法删除 - " + relativeFilePath;
             }
-            // 安全检查：避免删除重要文件
             String fileName = path.getFileName().toString();
             if (isImportantFile(fileName)) {
                 return "错误：不允许删除重要文件 - " + fileName;
@@ -55,9 +50,6 @@ public class FileDeleteTool extends BaseTool{
         }
     }
 
-    /**
-     * 判断是否是重要文件，不允许删除
-     */
     private boolean isImportantFile(String fileName) {
         String[] importantFiles = {
                 "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",

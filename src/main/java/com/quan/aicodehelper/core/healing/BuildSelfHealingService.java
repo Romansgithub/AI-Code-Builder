@@ -21,34 +21,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 构建自愈服务。
- *
- * <p><b>解决什么问题</b>：AI 生成的 Vue 项目经常因为 import 路径、标签闭合、CSS 语法等
- * 小问题构建失败。早期实现只是把错误打到日志、告诉用户「构建失败」，
- * 用户要么自己改代码，要么重新生成碰运气。</p>
- *
- * <p><b>怎么做</b>：把构建报错提取出来，作为 user 消息追加给同一个 AI 会话
- * （复用 {@code @MemoryId appId} 带来的上下文，模型知道自己刚写了什么代码），
- * 让它用文件工具直接修改，然后重新构建。循环直到成功或用完重试次数。</p>
- *
- * <p><b>为什么走独立的自愈服务，而不是复用生成服务</b>：生成服务的 user 消息来自聊天框，
- * 因此挂了输入护栏；自愈的 user 消息是程序拼装的构建报错，被那道护栏拦下过一次
- * （报错 573 字 + 模板 668 字 &gt; 1000 字上限），结果是「自愈两轮」零耗时、
- * 模型一次都没被调用过。完整记录见 {@link AiCodeHealingService}。</p>
- *
- * <p><b>为什么不是无脑重试</b>：只有「代码问题」才重试。依赖装不上、目录不存在这类
- * 环境问题，重试多少次结果都一样，纯属浪费 token 和用户时间 —— 见
- * {@link com.quan.aicodehelper.model.enums.BuildFailureTypeEnum#isHealable()}。
- * 同一条原则也适用于「调用本身失败」：确定性失败（输入校验、参数非法、未识别的异常）
- * 重试必然得到同样结果，必须立即中止而不是 continue。</p>
+ * 构建自愈服务：把构建报错追加回同一 AI 会话让它改代码，循环直至成功或用尽重试。
+ * 只重试代码类问题；环境类与确定性失败立即中止，不空转。
  */
 @Slf4j
 @Service
 public class BuildSelfHealingService {
 
-    /**
-     * 修复提示词模板路径。
-     */
     private static final String HEALING_PROMPT_RESOURCE = "prompt/build-self-healing-prompt.txt";
 
     @Resource
@@ -63,41 +42,19 @@ public class BuildSelfHealingService {
     @Resource
     private GenerationProgressRegistry generationProgressRegistry;
 
-    /**
-     * LLM 调用预算闸门。
-     *
-     * <p>必须在这里过闸：自愈是直接调 {@link AiCodeHealingService} 的，
-     * 并不经过 {@code AiCodeGeneratorFacade}。而自愈恰恰是**最贵**的一条路径
-     * ——一次生成失败最多触发 maxAttempts 轮完整生成，每轮都是足量输入输出。
-     * 漏掉这里的后果就是「预算显示没用到，实际已经花了几倍」。</p>
-     */
+    /** 预算闸门：自愈直连 service 不走 Facade，借不到那里的计数，必须在此过闸。 */
     @Resource
     private LlmCallGuard llmCallGuard;
 
     /**
-     * 带自愈的构建。
-     *
-     * <p>流程：构建 → 失败且可自愈 → 让 AI 修 → 再构建，最多重试
-     * {@link SelfHealingProperties#getMaxAttempts()} 轮。</p>
-     *
-     * @param projectPath 项目目录
-     * @param appId       应用 ID（同时作为 AI 会话记忆 ID）
-     * @return 最终构建结果。自愈成功时返回成功结果；用尽重试仍失败时，
-     *         返回最后一次的失败结果，并附上尝试次数
+     * @return 自愈成功返回成功结果；用尽重试仍失败则返回最后一次失败结果
      */
     public BuildResult buildWithHealing(String projectPath, Long appId) {
         return buildWithHealingOutcome(projectPath, appId).getBuildResult();
     }
 
     /**
-     * 带自愈的构建，并返回完整过程指标。
-     *
-     * <p>相比 {@link #buildWithHealing}，额外回报「首次是否通过」与「自愈轮数」，
-     * 供评测模块统计一次通过率与自愈成功率。</p>
-     *
-     * @param projectPath 项目目录
-     * @param appId       应用 ID（同时作为 AI 会话记忆 ID）
-     * @return 自愈结果，含最终构建结果与过程指标
+     * 带自愈的构建，额外返回「首次是否通过」与「自愈轮数」供评测统计。
      */
     public HealingOutcome buildWithHealingOutcome(String projectPath, Long appId) {
         long startedAt = System.currentTimeMillis();
@@ -138,11 +95,7 @@ public class BuildSelfHealingService {
             AiFixOutcome outcome = askAiToFix(appId, result, attempt, maxAttempts);
 
             if (outcome.status() == AiFixStatus.BUDGET_EXHAUSTED) {
-                // 预算耗尽既不是「修好了」也不是「修不动」：它是「没资格再试」。
-                // 必须与「本轮没修好」区分开 —— 后者会 continue 进下一轮，
-                // 而预算一旦耗尽，后续每一轮都会失败，等于把剩余重试次数
-                // 在一次热循环里空转烧完，用户看到「一直在修复」却毫无进展。
-                // 这里直接跳出循环，让构建失败的结果照常返回给调用方。
+                // 预算耗尽不是「没修好」而是「没资格再试」：continue 会让剩余轮次空转烧完，故直接跳出。
                 log.warn("LLM 预算耗尽，中止构建自愈（已完成 {} 轮）", executedAttempts);
                 emit(appId, "AI 调用额度已用尽，已停止自动修复，请手动检查构建错误");
                 result.setErrorMessage(buildFinalErrorMessage(maxAttempts, attemptErrors, result));
@@ -151,9 +104,7 @@ public class BuildSelfHealingService {
             }
 
             if (outcome.status() == AiFixStatus.ABORTED) {
-                // 中止 ≠ 这轮没修好。确定性失败再试一轮只会得到同样的结果，
-                // 那正是本项目自称要避免的「无脑重试」——而且代价很实在：
-                // 用户多等一轮、日志里多几条正常的重试提示、报告里多两轮假的修复记录。
+                // 中止 ≠ 本轮没修好：确定性失败再试一轮只会得到同样结果，必须立即终止。
                 log.error("第 {}/{} 轮自愈被中止（重试无意义），终止自愈循环：{}",
                         attempt, maxAttempts, outcome.reason());
                 emit(appId, "自动修复已中止：" + outcome.reason());
@@ -165,7 +116,6 @@ public class BuildSelfHealingService {
             if (outcome.status() == AiFixStatus.NOT_REPAIRED) {
                 log.warn("第 {} 轮自愈中，AI 未能给出有效修复（{}）", attempt, outcome.reason());
                 emit(appId, "自动修复未生效，继续重试...");
-                // 继续下一轮：模型没改成功，但错误信息还在，可以再试
                 continue;
             }
             result = vueProjectBuilder.buildProjectWithResult(projectPath, appId);
@@ -193,16 +143,10 @@ public class BuildSelfHealingService {
     }
 
     /**
-     * 让 AI 针对构建错误进行修复。
+     * 让 AI 修复构建错误：复用同一 appId 的对话记忆，但不挂用户输入护栏
+     * （护栏的 1000 字上限会把构建报错直接拒掉）。详见 {@link AiCodeHealingService}。
      *
-     * <p>调用的是<b>自愈专用</b>的 AI 服务：它复用同一个 {@code appId} 的对话记忆
-     * （模型能看到自己此前写入的文件内容），但<b>不挂用户输入护栏</b> ——
-     * 护栏那套「输入不超过 1000 字」的规则针对的是聊天框，套在构建报错上
-     * 会把请求直接拒掉。详见 {@link AiCodeHealingService}。</p>
-     *
-     * @return 修复尝试的结果。刻意用四态而非 boolean ——「AI 改了但没改对（可再试）」、
-     *         「没资格再试（预算耗尽）」、「再试也没用（确定性失败）」三者
-     *         在外层是三条不同的分支，压成一个 false 就会退化成无脑重试。
+     * @return 四态；压成 boolean 会让三种失败在外层退化成无脑重试
      */
     private AiFixOutcome askAiToFix(Long appId, BuildResult result, int attempt, int maxAttempts) {
         try {
@@ -214,8 +158,7 @@ public class BuildSelfHealingService {
             // 自愈直连 service，不经过 Facade，所以在真正发起调用前单独过闸
             llmCallGuard.acquire("构建自愈-第" + attempt + "轮");
 
-            // 同步消费整个流：自愈在独立虚拟线程中执行，此处阻塞不影响 SSE 主流程。
-            // 模型的回复只会是一句简短说明，但工具调用过程可能较长。
+            // 同步消费整个流：自愈在独立虚拟线程执行，此处阻塞不影响 SSE 主流程。
             StringBuilder reply = new StringBuilder();
             healingService.healVueProjectBuildFailure(appId, report)
                     .doOnNext(reply::append)
@@ -225,7 +168,6 @@ public class BuildSelfHealingService {
                     StrUtil.maxLength(reply.toString().trim(), 300));
             return AiFixOutcome.repaired();
         } catch (BusinessException e) {
-            // 这道闸门是本次调用里唯一会抛 BusinessException 的地方
             log.warn("第 {}/{} 轮自愈因预算耗尽被拦截：{}", attempt, maxAttempts, e.getMessage());
             return AiFixOutcome.budgetExhausted(e.getMessage());
         } catch (Exception e) {
@@ -235,43 +177,23 @@ public class BuildSelfHealingService {
                         attempt, maxAttempts, detail);
                 return AiFixOutcome.notRepaired(detail);
             }
-            // 确定性失败：同样的输入必然得到同样的结果。继续下一轮只是把这个错误
-            // 再演一遍 —— 而且会掩盖真相：报告上会显示「自愈 N 轮」，看起来努力过了，
-            // 实际上模型一次都没被调用（这正是 2026-09-21 那次跑批的真实情形）。
+            // 确定性失败：同样输入必然得到同样结果，继续重试只会重复错误并让报告虚报「已自愈 N 轮」。
             log.error("第 {}/{} 轮自愈调用 AI 失败且重试无意义，将中止自愈循环：{}",
                     attempt, maxAttempts, detail, e);
             return AiFixOutcome.aborted(detail);
         }
     }
 
-    /**
-     * 这次 AI 调用失败是否值得再试一轮。
-     *
-     * <p>判据直接复用模型降级的分类器：它对「换个模型 / 换个 key 是否可能成功」的回答，
-     * 在自愈这里恰好等价于「再试一次是否可能成功」。共用一份判据，是为了让
-     * 「重试之前先问重试能不能让它变好」这条原则在两条链路上不会各写一套后慢慢跑偏。</p>
-     *
-     * <p>注意它的默认结论是<b>不重试</b>：未识别的异常类型一律视为确定性失败。
-     * 这与「宁可让错误如实暴露，也不要因为看不懂就多打一次调用」一致。</p>
-     */
+    /** 复用降级分类器判据：「换模型能否成功」在自愈里等价于「再试一次能否成功」。未识别异常默认不重试。 */
     boolean isWorthRetrying(Throwable e) {
         return FallbackFailureClassifier.shouldFallback(e);
     }
 
-    /**
-     * 把异常翻译成一句能进日志和用户提示的说明。
-     */
     private String describeAiFailure(Throwable e) {
         return FallbackFailureClassifier.describe(e);
     }
 
-    /**
-     * 单轮修复尝试的结果。
-     *
-     * <p>用 record 而不是 boolean：status 决定外层走哪条分支，reason 决定
-     * 「为什么」能被写进日志与用户提示 —— 否则一旦中止，运维只能看到
-     * 「修复失败」四个字，无从判断是模型改不动还是压根没调上。</p>
-     */
+    /** 单轮修复结果：status 决定外层分支，reason 供日志与用户提示。 */
     private record AiFixOutcome(AiFixStatus status, String reason) {
 
         static AiFixOutcome repaired() {
@@ -291,37 +213,17 @@ public class BuildSelfHealingService {
         }
     }
 
-    /**
-     * 单轮修复尝试的三种结局。
-     */
     private enum AiFixStatus {
-        /** 模型完成了修复动作（不代表一定修好，需重新构建验证） */
+        /** 模型完成了修复动作，不代表一定修好，需重新构建验证 */
         REPAIRED,
-        /** 这一轮没生效，但属可重试的失败，值得再试一轮 */
         NOT_REPAIRED,
-        /** 确定性失败：重试会得到同样的结果，必须立即中止循环 */
         ABORTED,
-        /** 预算耗尽，没有资格再调用 —— 必须中止循环 */
         BUDGET_EXHAUSTED
     }
 
-    /**
-     * user 消息里除报错正文之外的固定字符数上界（模板 + 截断标记）。
-     *
-     * <p>被测试用来锁住一条设计约束：<b>修复指令必须留在 system 消息里</b>。
-     * user 消息只装构建报错，长度因此只随报错增长，不随指令措辞变化。
-     * 一旦有人把成段的指令拼回 user 消息，这个上界就会被突破、测试立刻失败 ——
-     * 而这类改动在 code review 时几乎看不出来，只会表现为「提示词又变长了」。</p>
-     */
+    /** user 消息里除报错外的固定字符数上界：修复指令必须留在 system 消息，上界才不随指令措辞变化。 */
     static final int PROMPT_OVERHEAD_RESERVE = 300;
 
-    /**
-     * 组装自愈请求的 user 消息。
-     *
-     * <p>这里<b>只放构建失败信息</b>：「怎么修」的要求在 system 消息里
-     * （{@code prompt/build-self-healing-system-prompt.txt}）。这样拆不只是语义更对
-     * （指令是规则，不是用户的诉求），也是长度上界成立的前提。</p>
-     */
     private String buildFailureReport(BuildResult result) {
         String template = loadPromptTemplate();
         String stage = StrUtil.blankToDefault(result.getStage(), "项目构建");
@@ -330,15 +232,7 @@ public class BuildSelfHealingService {
                 .replace("{errorMessage}", resolveErrorMessage(result));
     }
 
-    /**
-     * 取要喂给模型的报错文本，并<b>无条件</b>按 {@code maxErrorLength} 截断。
-     *
-     * <p>为什么强调「无条件」：原先只有走 {@link BuildErrorExtractor} 兜底时
-     * 才把长度上限传进去，而 {@link BuildResult#getErrorMessage()} 是构建器用
-     * <b>不带上限</b>的 {@code BuildErrorExtractor.extract(rawOutput)} 提取的 ——
-     * 也就是说 {@code app.self-healing.max-error-length} 这条配置在最常见的路径上
-     * <b>根本没生效</b>。一个配置项只有在唯一一处收口才有意义，所以统一到这里截断。</p>
-     */
+    /** 无条件按 maxErrorLength 截断：配置项只在唯一一处收口才有意义，否则最常见的路径上根本不生效。 */
     private String resolveErrorMessage(BuildResult result) {
         int max = selfHealingProperties.getMaxErrorLength();
         String error = StrUtil.blankToDefault(
@@ -356,12 +250,7 @@ public class BuildSelfHealingService {
     }
 
     /**
-     * 读取 user 消息模板；文件缺失时退化为内置兜底文本，保证功能不因资源缺失而中断。
-     *
-     * <p>兜底文本必须与文件保持一致：<b>只含失败信息，不含修复指令</b>
-     * （指令在 system 消息里）。若这里顺手把指令也塞进来，就等于给
-     * 「user 消息长度」开了一个随模板变化的缺口，
-     * {@link #PROMPT_OVERHEAD_RESERVE} 这个上界也就不再成立了。</p>
+     * 缺失时退化为内置兜底文本；兜底文本必须不含修复指令，否则 {@link #PROMPT_OVERHEAD_RESERVE} 上界失效。
      */
     private String loadPromptTemplate() {
         try {
@@ -379,9 +268,6 @@ public class BuildSelfHealingService {
                 StrUtil.maxLength(StrUtil.blankToDefault(result.getErrorMessage(), "未知错误"), 300));
     }
 
-    /**
-     * 用尽重试后，把每轮的错误拼进最终信息，便于用户排查。
-     */
     private String buildFinalErrorMessage(int maxAttempts, List<String> attemptErrors, BuildResult last) {
         StringBuilder sb = new StringBuilder();
         sb.append("项目构建失败，已自动尝试修复 ").append(maxAttempts).append(" 次仍未成功。\n\n");
@@ -395,13 +281,7 @@ public class BuildSelfHealingService {
         return sb.toString();
     }
 
-    /**
-     * 自愈被中止时的最终错误信息。
-     *
-     * <p>必须与「重试了 N 次都没修好」说清楚区别：前者是「没有再试」，
-     * 后者是「试过了不行」。混成一句「修复失败」会让人误以为模型努力过 ——
-     * 而这类中止通常恰恰意味着模型一次都没被调上，是最需要立刻排查的情形。</p>
-     */
+    /** 须与「重试 N 次没修好」区分：中止是「没再试」，通常意味着模型一次都没调上。 */
     private String buildAbortedErrorMessage(String reason, List<String> attemptErrors, BuildResult last) {
         StringBuilder sb = new StringBuilder();
         sb.append("项目构建失败，自动修复已中止（未继续重试）。\n\n");

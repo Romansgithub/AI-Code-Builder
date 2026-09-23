@@ -13,9 +13,6 @@ import java.util.List;
 @Data
 public class EvalRunResult {
 
-    /**
-     * 批次标识，与落库的 batchId 一致。
-     */
     private String batchId;
 
     private String evalSetName;
@@ -28,24 +25,15 @@ public class EvalRunResult {
 
     private List<CaseResult> cases = new ArrayList<>();
 
-    /**
-     * 汇总统计。
-     */
     private EvalSummary summary = new EvalSummary();
 
-    /**
-     * 单条用例的执行结果。
-     */
     @Data
     public static class CaseResult {
         private String caseId;
         private String description;
         private String codeGenType;
-        /** 首轮是否直接通过 */
         private boolean firstBuildPassed;
-        /** 自愈轮数 */
         private int healingAttempts;
-        /** 最终是否通过 */
         private boolean finalPassed;
         private String failureType;
         private String failureMessage;
@@ -54,22 +42,17 @@ public class EvalRunResult {
         private long totalCostMs;
         private Integer fileCount;
         private Long totalBytes;
-        /** 用例自身耗尽了超时时间 */
         private boolean timedOut;
-        /** 执行过程中未预期的异常（如 AI 调用失败） */
         private String unexpectedError;
         /**
-         * 该用例是否配了故障注入。
-         *
-         * <p>注入用例的首轮失败是<b>设计目的</b>（它靠注入制造必然失败来给自愈出题），
-         * 因此不能计入一次通过率 —— 否则等于用一次刻意的失败去拉低 headline 指标，
-         * 让报告读起来像「生成质量变差了」。它只该进自愈成功率的分子分母。</p>
+         * 该用例是否配了故障注入。注入用例首轮失败是设计目的（靠注入给自愈出题），
+         * 不能计入一次通过率，只进自愈成功率的分子分母。
          */
         private boolean faultInjected;
     }
 
     /**
-     * 跑批汇总指标：这就是最后写进报告、拿去面试讲的那几个数。
+     * 跑批汇总指标。
      */
     @Data
     public static class EvalSummary {
@@ -79,25 +62,16 @@ public class EvalRunResult {
         private int ratedCount;
         /** 故障注入用例数（首轮必失败，不计入通过率） */
         private int faultInjectionCount;
-        /** 首轮直接通过数 */
         private int firstPassCount;
-        /** 最终通过数 */
         private int finalPassCount;
-        /** 触发过自愈的用例数 */
         private int healingUsedCount;
-        /** 自愈后成功数 */
         private int healedSuccessCount;
-        /** 平均生成耗时 */
         private long avgGenerateCostMs;
-        /** 平均构建耗时 */
         private long avgBuildCostMs;
 
         /**
-         * 一次通过率（0-100，保留一位小数）。
-         *
-         * <p>分母是 {@link #ratedCount} 而不是用例总数：故障注入用例首轮必然失败
-         * （那是它的设计目的），把它算进来会让「生成质量」这个指标凭空掉几个点，
-         * 而掉的那部分恰恰是我们自己刻意制造的。</p>
+         * 一次通过率（0-100，保留一位小数）。分母是 {@link #ratedCount} 而非用例总数：
+         * 故障注入用例首轮必然失败（那是它的设计目的），算进来会让生成质量指标凭空掉几个点。
          */
         public double firstPassRate() {
             return ratedCount == 0 ? 0.0 : round1(firstPassCount * 100.0 / ratedCount);
@@ -111,11 +85,8 @@ public class EvalRunResult {
         }
 
         /**
-         * 自愈成功率 = 自愈后成功数 / 触发自愈数。
-         *
-         * <p>这是最能说明「自愈到底有没有用」的指标：没触发自愈时返回 0，
-         * 但调用方应看 healingUsedCount 是否为 0，避免把「没机会自愈」
-         * 误读成「自愈全失败」。</p>
+         * 自愈成功率 = 自愈后成功数 / 触发自愈数。没触发自愈时返回 0，
+         * 调用方需看 healingUsedCount 是否为 0，避免把「没机会自愈」误读成「自愈全失败」。
          */
         public double healingSuccessRate() {
             return healingUsedCount == 0 ? 0.0 : round1(healedSuccessCount * 100.0 / healingUsedCount);
@@ -127,10 +98,8 @@ public class EvalRunResult {
     }
 
     /**
-     * 由用例结果计算汇总。
-     *
-     * <p>用静态工厂而不是构造器：汇总逻辑要能被单独测试，
-     * 不该和跑批流程（要调 AI、跑 npm）耦合在一起。</p>
+     * 由用例结果计算汇总。用静态工厂而非构造器：汇总逻辑要能被单独测试，
+     * 不该和跑批流程（调 AI、跑 npm）耦合。
      */
     public static EvalSummary summarize(List<CaseResult> cases) {
         EvalSummary s = new EvalSummary();
@@ -143,8 +112,7 @@ public class EvalRunResult {
         int rated = 0;
         for (CaseResult c : cases) {
             if (c.isFaultInjected()) {
-                // 注入用例不进通过率：它首轮必失败是设计使然，拿它算通过率
-                // 就是让「我们自己制造的失败」去污染产品指标。
+                // 注入用例不进通过率：它首轮必失败是设计使然，拿它算等于让刻意制造的失败污染产品指标。
                 s.setFaultInjectionCount(s.getFaultInjectionCount() + 1);
             } else {
                 rated++;
@@ -155,11 +123,8 @@ public class EvalRunResult {
                     s.setFinalPassCount(s.getFinalPassCount() + 1);
                 }
             }
-            // 自愈成功率的分子分母照常包含注入用例 —— 它正是自愈的唯一度量样本。
-            // 注意这里刻意**不要求**「自愈成功」才算数：被中止、预算耗尽而没有真跑起来的
-            // 轮次也计入分母。否则最差的那批样本会从分子分母里双双消失，
-            // 报告显示「本次无用例触发自愈」，而实情是自愈被触发了、一个字都没改。
-            // 宁可比率难看，也不要让失败样本静默消失。
+            // 自愈成功率的分子分母照常含注入用例（它是自愈唯一的度量样本），且刻意不要求「自愈成功」
+            // 才算数：被中止、预算耗尽的轮次也计入分母，否则最差样本会双双消失，报告显示「未触发自愈」。
             if (c.getHealingAttempts() > 0) {
                 s.setHealingUsedCount(s.getHealingUsedCount() + 1);
                 if (c.isFinalPassed()) {
@@ -206,10 +171,8 @@ public class EvalRunResult {
                     summary.getRatedCount(), summary.getTotalCount(),
                     summary.getFaultInjectionCount()));
             if (summary.getHealingUsedCount() == 0) {
-                // 这一行是把「空数据」和「0% 成功率」区分开的关键。
-                // 曾经出现过：注入的 find 串写错导致一次都没命中，自愈从未被触发，
-                // 报告却只显示「自愈成功率：本次无用例触发自愈」——
-                // 看起来一切正常，实际上整条链路根本没被验证过。
+                // 把「空数据」和「0% 成功率」区分开：注入没命中时自愈从未被触发，
+                // 报告只显示「未触发自愈」看着正常，但整条链路根本没被验证过。
                 sb.append("⚠ 注意：配置了故障注入用例，却没有任何用例触发自愈。"
                         + "说明注入没生效或自愈链路没跑起来，本轮自愈数据不可用，"
                         + "请检查上面注入用例的失败原因。\n");

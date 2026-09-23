@@ -6,11 +6,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 评测报告视图对象。
- *
- * <p>直接暴露 Mapper 返回的 {@code Map} 会带来两个问题：字段名拼错在编译期发现不了，
- * 且前端拿不到「比率」这类派生值，还得自己算。这里显式定义结构，
- * 顺带把百分率算好。</p>
+ * 评测报告视图对象。直接暴露 Mapper 返回的 {@code Map} 有两个问题：字段名拼错编译期发现不了，
+ * 且前端拿不到「比率」这类派生值还得自己算；这里显式定义结构并把百分率算好。
  */
 @Data
 public class EvalReportVO {
@@ -30,29 +27,14 @@ public class EvalReportVO {
      */
     private String batchId;
 
-    /**
-     * 总体指标。
-     */
     private Overall overall = new Overall();
 
-    /**
-     * 分生成类型指标。
-     */
     private List<ByType> byType = new ArrayList<>();
 
-    /**
-     * 失败原因分布。
-     */
     private List<FailureItem> failures = new ArrayList<>();
 
-    /**
-     * 自愈轮数分布。
-     */
     private List<HealingItem> healingAttempts = new ArrayList<>();
 
-    /**
-     * 总体指标。
-     */
     @Data
     public static class Overall {
         private long totalCount;
@@ -65,13 +47,10 @@ public class EvalReportVO {
         private double firstPassRate;
         /** 最终通过率（%） */
         private double finalPassRate;
-        /** 自愈成功率（%），healingUsedCount 为 0 时为 null —— 表示「无数据」而非「0%」 */
+        /** 自愈成功率（%），healingUsedCount 为 0 时为 null，表示「无数据」而非「0%」 */
         private Double healingSuccessRate;
     }
 
-    /**
-     * 分类型指标。
-     */
     @Data
     public static class ByType {
         private String codeGenType;
@@ -88,22 +67,15 @@ public class EvalReportVO {
         private Double healingSuccessRate;
     }
 
-    /**
-     * 失败原因分布项。
-     */
     @Data
     public static class FailureItem {
         private String failureType;
-        /** 失败类型的中文描述 */
         private String failureTypeText;
         private long failureCount;
         /** 占全部失败数的比例（%） */
         private double ratio;
     }
 
-    /**
-     * 自愈轮数分布项。
-     */
     @Data
     public static class HealingItem {
         private int healingAttempts;

@@ -11,11 +11,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 评测作用域标记测试。
- *
- * <p>这个标记控制着「生产侧的异步构建要不要让路」。它一旦泄漏出去，
- * 后果是真实用户的 Vue 项目<b>永远不构建</b>且没有任何报错 ——
- * 属于最难发现的一类故障。所以边界要逐条钉死。</p>
+ * 评测作用域标记测试：该标记控制生产侧异步构建是否让路。
+ * 一旦泄漏，真实用户的 Vue 项目会静默永远不构建，属最难发现的故障，边界需逐条钉死。
  */
 @DisplayName("评测作用域标记")
 class EvalScopeTest {
@@ -74,7 +71,6 @@ class EvalScopeTest {
         @DisplayName("作用域结束后应还原为不在评测中")
         void shouldRestoreAfterScope() {
             EvalScope.runInScope(() -> {
-                // 什么都不做
             });
 
             assertThat(EvalScope.isActive()).isFalse();

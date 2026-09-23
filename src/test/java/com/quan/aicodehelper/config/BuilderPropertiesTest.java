@@ -7,17 +7,9 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 构建相关配置测试。
- *
- * <p><b>回归背景</b>：{@code npm install} 用默认源 {@code registry.npmjs.org} 时，
- * 国内网络下拉不动 —— 症状是 install 卡满 300 秒超时上限被强杀、产物目录里
- * {@code node_modules} 一个包都没落地，而生成阶段完全正常，于是整轮评测的
- * vue 用例被误读成「代码生成质量差」。2026-09-22 的跑批就因此 4 条 vue 全灭。</p>
- *
- * <p>修复方式是以命令行参数追加 {@code --registry=<镜像>}。而 {@code application.yml}
- * 被 {@code .gitignore} 排除、仓库内也无 example 模板，因此<b>默认值必须随代码走</b>：
- * 若默认值只写在 yml 里，换台机器克隆后该值为空，故障会静默复发（不报错、只是又卡满 300 秒）。
- * 本测试锁死「默认值可用」与「显式留空即不干预」两个行为。</p>
+ * 构建相关配置测试。{@code npm install} 用默认源时国内网络拉不动，症状是 install 卡满
+ * 300 秒被强杀、{@code node_modules} 一个包都没落地，而生成阶段正常，于是 vue 用例被
+ * 误读成「代码生成质量差」。默认值必须随代码走，否则换台机器克隆后为空、故障静默复发。
  */
 @DisplayName("Vue 构建配置")
 class BuilderPropertiesTest {

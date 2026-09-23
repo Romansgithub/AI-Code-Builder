@@ -12,11 +12,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 生成进度事件缓冲测试。
- *
- * <p>这个类守的是断线重连的地基：如果事件会「无声地消失」，
- * 或者 id 会重复、会跳变，前端补齐进度就无从谈起。
- * 因此断言集中在三件事上 —— <b>顺序、缺口、淘汰</b>。</p>
+ * 生成进度事件缓冲测试：守的是断线重连的地基，断言集中在顺序、缺口、淘汰。
  */
 @DisplayName("生成进度事件缓冲")
 class GenerationEventStoreTest {
@@ -122,7 +118,6 @@ class GenerationEventStoreTest {
 
             List<GenerationEvent> events = store.snapshot(APP_ID);
             assertThat(events).hasSize(5);
-            // 保留下来的应是最近的 5 条
             assertThat(events).extracting(GenerationEvent::id).containsExactly(4L, 5L, 6L, 7L, 8L);
         }
 
@@ -152,9 +147,7 @@ class GenerationEventStoreTest {
         void shouldPurgeByTime() throws Exception {
             store.append(APP_ID, "progress", "旧事件");
             GenerationEvent old = store.snapshot(APP_ID).get(0);
-            // 不能用「现在」当分界：两条事件可能落在同一毫秒，
-            // 分界点若正好压在新事件上就会把它一起清掉，测试变得看运气。
-            // 改成以旧事件自身的时刻 +1ms 为界，语义明确且不依赖 sleep 精度。
+            // 以旧事件自身时刻 +1ms 为界，避免分界点压在新事件上把它一起清掉（不依赖 sleep 精度）
             long cutoff = old.created() + 1;
 
             // 这里必须真的让时间往前走一点，新事件才会落在 cutoff 之后
@@ -223,7 +216,6 @@ class GenerationEventStoreTest {
 
             // 缓冲只有 5 条，但「已分配的最大 id」必须等于总追加次数
             assertThat(store.currentMaxId(APP_ID)).isEqualTo((long) threads * perThread);
-            // 保留的 5 条 id 必须严格递增且连续
             List<GenerationEvent> kept = store.snapshot(APP_ID);
             assertThat(kept).hasSize(5);
             for (int i = 1; i < kept.size(); i++) {

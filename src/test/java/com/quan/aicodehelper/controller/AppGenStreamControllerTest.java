@@ -35,19 +35,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 生成接口拆分后的 HTTP 行为测试。
- *
- * <p><b>为什么必须在这里测</b>：这次改造的收益全部依赖于「前端调的是哪个方法、
- * 用什么 HTTP 方法」，而这类信息在 service 层测不出来 —— 一个 {@code @GetMapping}
- * 改回 {@code @PostMapping} 的笔误，单元测试全绿，线上却会重新出现
- * 「浏览器自动重放 GET 导致重复生成」。</p>
- *
- * <p>因此这里用 {@link MockMvc} 从 HTTP 边界断言三件事：</p>
- * <ol>
- *   <li>触发接口是 POST 且接收 body，不再是 GET + query；</li>
- *   <li>订阅接口是 GET 且能读 {@code Last-Event-ID} 头；</li>
- *   <li>触发接口返回 JSON 回执，不再持有长连接。</li>
- * </ol>
+ * 生成接口拆分后的 HTTP 行为测试：用 MockMvc 从 HTTP 边界断言触发接口是 POST 收 body、
+ * 订阅接口是 GET 读 Last-Event-ID、触发返回 JSON 回执。service 层测不出这类信息。
  */
 @DisplayName("代码生成接口（触发 / 订阅分离）")
 class AppGenStreamControllerTest {
@@ -72,9 +61,7 @@ class AppGenStreamControllerTest {
         ReflectionTestUtils.setField(controller, "userService", userService);
         ReflectionTestUtils.setField(controller, "generationProgressRegistry", registry);
 
-        // 必须挂上全局异常处理器：生产环境里 BusinessException 会被它转成统一 JSON 响应，
-        // 而 standaloneSetup 默认不带 —— 少了它，参数校验用例会直接收到 ServletException，
-        // 测出来的是「测试脚手架差异」，而不是真实的 HTTP 行为
+            // standaloneSetup 默认不带全局异常处理器，参数校验用例会收到 ServletException 而非真实 JSON 响应
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new com.quan.aicodehelper.exception.GlobalExceptionHandler())
                 .setAsyncRequestTimeout(Long.MAX_VALUE)
@@ -86,10 +73,6 @@ class AppGenStreamControllerTest {
         user.setId(USER_ID);
         return user;
     }
-
-    // ==================================================================
-    // 一、触发接口：必须是 POST + body
-    // ==================================================================
 
     @Nested
     @DisplayName("发起生成")
@@ -174,8 +157,7 @@ class AppGenStreamControllerTest {
         @Test
         @DisplayName("旧的长连接触发方式（GET + query）不应再存在")
         void shouldNotExposeLongLivedGetTrigger() throws Exception {
-            // 旧实现是 GET /app/chat/gen/code?appId=..&message=..，返回 SSE 流。
-            // 它必须彻底消失：只要还在，浏览器就有自动重放它的机会。
+            // 旧的长连接 GET 触发方式必须彻底消失，否则浏览器会重新自动重放它
             boolean hasGetOnTrigger = Arrays.stream(AppController.class.getDeclaredMethods())
                     .filter(m -> "generateCode".equals(m.getName()))
                     .flatMap(m -> Arrays.stream(m.getAnnotations()))
@@ -183,10 +165,6 @@ class AppGenStreamControllerTest {
             assertThat(hasGetOnTrigger).isFalse();
         }
     }
-
-    // ==================================================================
-    // 二、订阅接口：GET + Last-Event-ID
-    // ==================================================================
 
     @Nested
     @DisplayName("订阅生成进度")
@@ -284,10 +262,6 @@ class AppGenStreamControllerTest {
             verify(registry, never()).subscribe(anyLong(), anyLong());
         }
     }
-
-    // ==================================================================
-    // 三、状态查询
-    // ==================================================================
 
     @Nested
     @DisplayName("生成状态查询")

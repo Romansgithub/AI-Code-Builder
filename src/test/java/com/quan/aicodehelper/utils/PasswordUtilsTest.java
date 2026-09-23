@@ -11,14 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 密码工具测试。
- *
- * <p>重点覆盖三件事：
- * <ol>
- *   <li>BCrypt 加密与校验的基本正确性；</li>
- *   <li>对历史遗留 MD5 密码的向后兼容（保证存量用户仍能登录）；</li>
- *   <li>升级判定逻辑，确保旧格式能被识别并触发迁移。</li>
- * </ol>
+ * 密码工具测试：覆盖 BCrypt 加密校验、历史 MD5 向后兼容、升级判定。
  *
  * @author <a href="https://github.com/romansgithub">Roman</a>
  */
@@ -141,19 +134,15 @@ class PasswordUtilsTest {
         @Test
         @DisplayName("老用户用 MD5 登录成功后，密码可升级为 BCrypt 且新旧两种校验均可用")
         void shouldUpgradeLegacyPasswordOnLogin() {
-            // 1. 模拟数据库中保存的旧 MD5 密码
             String rawPassword = "userOldPassword";
             String storedInDb = legacyMd5(rawPassword);
 
-            // 2. 迁移前：需要升级，且能用明文登录
             assertThat(passwordUtils.needsUpgrade(storedInDb)).isTrue();
             assertThat(passwordUtils.matches(rawPassword, storedInDb)).isTrue();
 
-            // 3. 执行升级
             String upgraded = passwordUtils.encode(rawPassword);
             assertThat(passwordUtils.needsUpgrade(upgraded)).isFalse();
 
-            // 4. 迁移后：同一明文仍能通过校验，错误明文仍被拒绝
             assertThat(passwordUtils.matches(rawPassword, upgraded)).isTrue();
             assertThat(passwordUtils.matches("wrongPassword", upgraded)).isFalse();
         }

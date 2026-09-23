@@ -6,7 +6,6 @@ import lombok.EqualsAndHashCode;
 
 import java.io.Serializable;
 import java.time.LocalDateTime;
-//import java.time.LocalDateTime;
 
 @EqualsAndHashCode(callSuper = true)
 @Data

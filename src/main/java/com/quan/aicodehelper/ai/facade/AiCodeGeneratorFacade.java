@@ -25,9 +25,6 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import java.io.File;
 
-/**
- * 代码流工厂类
- */
 @Service
 @Slf4j
 public class AiCodeGeneratorFacade {
@@ -35,9 +32,6 @@ public class AiCodeGeneratorFacade {
     @Resource
     private AiCodeGeneratorServiceFactory aiCodeGeneratorServiceFactory;
 
-    /**
-     * 构建自愈服务：构建失败时让 AI 自动修复。
-     */
     @Resource
     private BuildSelfHealingService buildSelfHealingService;
 
@@ -45,56 +39,30 @@ public class AiCodeGeneratorFacade {
     private GenerationProgressRegistry generationProgressRegistry;
 
     /**
-     * 生成质量指标采集器。
-     *
-     * <p>旁路埋点：它挂掉不能影响用户拿到代码，因此
-     * {@link CodeGenEvalRecorder#record(GenerationMetric)} 是「永不抛出」语义。</p>
+     * 旁路埋点：它挂掉不能影响用户拿到代码，{@link CodeGenEvalRecorder#record(GenerationMetric)} 永不抛出。
      */
     @Resource
     private CodeGenEvalRecorder codeGenEvalRecorder;
 
-    /**
-     * LLM 调用预算闸门。
-     *
-     * <p>装在这一层而不是各调用点的原因：这里是「生成类调用」的唯一交汇处 ——
-     * 用户生成、构建自愈、评测跑批三条路径最终都要经过
-     * {@link #generateCodeStream}。装在这里可以用一处代码覆盖三条路径，
-     * 将来新增路径也不会漏账。</p>
-     */
+    /** LLM 调用预算闸门。挂在本类而非各调用点：本类是「生成类调用」的唯一交汇处，一处覆盖全部路径，新增路径不会漏账。 */
     @Resource
     private LlmCallGuard llmCallGuard;
 
     /**
-     * 检索增强：把项目现有代码里与本次需求相关的片段取出来，注入模型的 system message。
-     *
-     * <p>装在这一层的理由与预算闸门相同 —— 这里是「生成类调用」的唯一交汇处，
-     * 用户生成、构建自愈、评测跑批都要经过 {@link #generateCodeStream}。
-     * 检索增强只需要挂一处，就能覆盖所有路径；而评测跑批因为用的是负数 appId
-     * （见 {@code EvalRunner}），会自然退化为「无增强」，
-     * 于是既有评测集的口径不受影响、指标仍可与历史批次对比。</p>
-     *
-     * <p>永不抛异常：检索失败只意味着这一轮没有增强。</p>
+     * 检索增强：把项目现有代码里与需求相关的片段注入模型的 system message。
+     * <p>挂在「生成类调用」的唯一交汇处即可覆盖全部路径；评测跑批用负数 appId（见 {@code EvalRunner}），
+     * 会自然退化为无增强，既有评测口径不受影响。检索失败只意味着本轮没有增强，绝不抛异常。</p>
      */
     @Resource
     private CodeContextProvider codeContextProvider;
 
-    /**
-     * 工程代码索引：生成完成后异步把落盘的代码切块向量化，
-     * 供下一次迭代检索使用。
-     */
     @Resource
     private CodeIndexService codeIndexService;
 
     /**
-     * 处理代码流通用方法
-     *
-     * <p>这里是「生成 → 保存 / 构建」的总入口，也是唯一能同时拿到两段耗时的地方：
-     * 进入方法时开始计时，流消费完成即为生成阶段结束，之后的构建耗时单独统计。
-     * 因此评测埋点放在这一层，而不是散落到各个分支里。</p>
-     *
-     * @param codeStream
-     * @param codeGenTypeEnum
-     * @return
+     * 处理代码流通用方法。
+     * <p>这里是「生成 → 保存 / 构建」的总入口，也是唯一能同时拿到两段耗时的地方：计时从这里开始，
+     * 流消费完成即生成阶段结束，构建耗时另行统计，故评测埋点放在这一层而非散落到各分支。</p>
      */
 
     private Flux<String> processCodeStream(Flux<String> codeStream, CodeGenTypeEnum codeGenTypeEnum,
@@ -107,44 +75,26 @@ public class AiCodeGeneratorFacade {
             long generateCostMs = System.currentTimeMillis() - startedAt;
             if (codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT)
             {
-                // 评测跑批会自己对同一个目录调同步的「构建 + 自愈」以拿到结构化指标，
-                // 这里再异步跑一遍就会和它并发抢 node_modules / dist，并多写一条评测记录。
-                // 所以评测期间由调用方置起 EvalScope，此处让路。
-                //
-                // 注意 inEvalScope 是**入参**而不是在这里现问 EvalScope.isActive()：
-                // 这个回调的执行线程由底层 HTTP 客户端决定，不是发起生成的那条线程，
-                // 而 EvalScope 是 ThreadLocal —— 在这里现问会恒得 false，
-                // 于是生产侧的异步构建照样启动。2026-09-21 的假数据就是这么来的：
-                // 异步那条先构建失败、抢先自愈把产物修好，评测自己的构建随后「首轮通过」，
-                // 报告写成「自愈 0 轮 / 未触发自愈」，而模型其实已经被调用过一次。
+                // 评测跑批自己会同步跑「构建 + 自愈」，此处让路，避免并发抢 node_modules / dist。
                 if (inEvalScope) {
                     return;
                 }
-                // Vue 工程走「异步构建 + 自动修复」：构建本身要跑 npm，耗时以分钟计，
-                // 不能阻塞 SSE 流；自愈过程中通过 GenerationProgressRegistry 推送进度，
-                // 用户能看到「正在修复（第 1/2 次）」这类实时反馈。
+                // Vue 工程走「异步构建 + 自动修复」，npm 构建耗时以分钟计，不能阻塞 SSE 流。
                 String projectPath = AppConstant.getCodeOutputRootDir() + File.separator
                         + codeGenTypeEnum.getValue() + "_" + appId;
                 buildVueProjectAsync(projectPath, appId, generateCostMs);
-                // Vue 工程的源码是模型用工具直接写到磁盘的，此刻已就位，可以索引
                 indexAfterGeneration(appId, codeGenTypeEnum, inEvalScope);
                 return;
             }
             recordSaveOutcome(codeBuilder.toString(), codeGenTypeEnum, appId, generateCostMs,
                     inEvalScope);
-            // HTML / 多文件的源码刚刚由 saver 落盘，紧接着做一次索引预热
             indexAfterGeneration(appId, codeGenTypeEnum, inEvalScope);
         });
     }
 
     /**
-     * 解析并保存代码，同时上报评测指标。
-     *
-     * <p>HTML / 多文件类型没有构建步骤，因此「一次通过率」在这里退化为
-     * 「解析与保存是否成功」—— 解析失败同样意味着这次生成对用户不可用。</p>
-     *
-     * <p>评测跑批期间只保存、不上报：{@code EvalRunner} 会带着 batchId 统一落库，
-     * 这里再记一条就变成同一用例两个 id 空间的数据混在一张表里，聚合口径会被污染。</p>
+     * 解析并保存代码并上报评测指标。HTML / 多文件无构建步骤，一次通过率退化为解析与保存是否成功。
+     * 评测跑批期间只保存不上报（{@code EvalRunner} 统一落库，重复记会污染口径）。
      */
     private void recordSaveOutcome(String completeCode, CodeGenTypeEnum codeGenTypeEnum,
                                    Long appId, long generateCostMs, boolean inEvalScope) {
@@ -162,8 +112,6 @@ public class AiCodeGeneratorFacade {
             log.error("保存失败：{}", failureMessage);
         }
 
-        // 与 processCodeStream 同样的理由：这个方法的调用者是流完成回调，
-        // 线程不固定，判断必须用入参而不是现问 EvalScope.isActive()。
         if (inEvalScope) {
             return;
         }
@@ -186,14 +134,7 @@ public class AiCodeGeneratorFacade {
         recordQuietly(metric);
     }
 
-    /**
-     * 上报指标，并保证埋点绝不会反噬主流程。
-     *
-     * <p>{@link CodeGenEvalRecorder#record} 自身已做容错，但这里是流式回调 ——
-     * 回调里抛出的异常会被 Reactor 转成 {@code onError} 信号，
-     * 直接让整条 SSE 流中断，用户代码都收不到。
-     * 因此在这一层再兜一次，把「埋点失败」和「代码生成失败」彻底隔开。</p>
-     */
+    /** 上报指标，但埋点不可反噬主流程：流式回调抛出的异常会被 Reactor 转成 {@code onError} 中断整条 SSE 流，故再兜一层。 */
     private void recordQuietly(GenerationMetric metric) {
         try {
             codeGenEvalRecorder.record(metric);
@@ -204,11 +145,8 @@ public class AiCodeGeneratorFacade {
 
     /**
      * 异步构建 Vue 工程，失败时自动触发自愈。
-     *
-     * <p>用虚拟线程承载：构建 + 自愈可能持续数分钟，占用平台线程会拖垮线程池。
-     * 异常必须在此处兜底 —— 虚拟线程内抛出的异常无人接收，会被静默吞掉。</p>
-     *
-     * @param generateCostMs 代码生成阶段耗时，用于拼出端到端总耗时
+     * <p>用虚拟线程承载：构建 + 自愈可能持续数分钟，占用平台线程会拖垮线程池；异常必须在此兜底，
+     * 虚拟线程内抛出的异常无人接收，会被静默吞掉。{@code generateCostMs} 为代码生成阶段耗时。</p>
      */
     private void buildVueProjectAsync(String projectPath, Long appId, long generateCostMs) {
         Thread.ofVirtual().name("vue-build-heal-" + appId).start(() -> {
@@ -235,9 +173,7 @@ public class AiCodeGeneratorFacade {
 
     /**
      * 上报 Vue 工程这次的生成 + 构建结果。
-     *
-     * <p>放在 {@code finally} 里：无论是自愈成功、自愈失败还是流程本身抛异常，
-     * 都要留下一条记录 —— 异常路径恰恰是最需要被统计的那些样本。</p>
+     * <p>放在 {@code finally} 里：自愈成功、失败、流程抛异常都要留记录，异常路径是最需要被统计的样本。</p>
      */
     private void recordBuildOutcome(Long appId, String projectPath, long generateCostMs,
                                     HealingOutcome outcome, String unexpectedError) {
@@ -269,14 +205,9 @@ public class AiCodeGeneratorFacade {
 
     /**
      * 取本次生成要注入的项目现有代码上下文。
-     *
-     * <p>只在「已有应用」上做检索：负数 appId 是评测会话（见 {@code EvalRunner}），
-     * 它既没有磁盘上的历史代码，也不该让评测结果受到检索的影响 ——
-     * 否则同一份评测集在不同批次跑出来的数字就不可比了。</p>
-     *
-     * <p>检索发生时明确告知用户。与模型降级的处理一致（见 {@code notifyFallback}）：
-     * 用户看到了「已检索到相关片段」，才能理解为什么这次修改更准，
-     * 排查问题时也多一条线索；静默增强会让效果差异变得无从解释。</p>
+     * <p>只在「已有应用」上检索：负数 appId 是评测会话（见 {@code EvalRunner}），既无历史代码，
+     * 也不该让检索影响评测结果，否则同一评测集跨批次不可比。检索发生时要告知用户，
+     * 静默增强会让效果差异无从解释（与模型降级一致，见 {@code notifyFallback}）。</p>
      */
     private String resolveProjectContext(Long appId, CodeGenTypeEnum type, String userMessage) {
         if (appId == null || appId <= 0) {
@@ -292,11 +223,8 @@ public class AiCodeGeneratorFacade {
     }
 
     /**
-     * 触发一次索引预热。
-     *
-     * <p>再兜一层异常：调用点位于流完成回调里，那里抛出的异常会被 Reactor
-     * 转成 {@code onError} 信号，把已经生成好的结果整条打断。
-     * 索引是派生数据，绝不能反过来伤害主流程。</p>
+     * 触发索引预热。调用点在流完成回调里，异常会被 Reactor 转成
+     * {@code onError} 打断已生成结果，故再兜一层；索引是派生数据，绝不能伤害主流程。
      */
     private void indexAfterGeneration(Long appId, CodeGenTypeEnum type, boolean inEvalScope) {
         if (inEvalScope || appId == null) {
@@ -309,27 +237,17 @@ public class AiCodeGeneratorFacade {
         }
     }
 
-    /**
-     * 根据用户消息生成代码流
-     *
-     * @param userMessage
-     * @param codeGenTypeEnum
-     * @return
-     */
+    /** 根据用户消息生成代码流。 */
     public Flux<String> generateCodeStream(String userMessage, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
         if (codeGenTypeEnum == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "代码生成类型不能为空");
         }
-        // 闸门必须在任何模型调用之前 —— 顺序反了就变成「先花钱再记账」。
-        // 裸奔出去（fail-open + 日志）而不是放行，是因为漏一次账就
-        // 会在后续每一次调用上重复漏，账目永远不可信。
+        // 闸门必须在任何模型调用之前，否则成了「先花钱再记账」；漏一次账会在后续每次调用上重复漏，账目永远不可信。
         llmCallGuard.acquire("代码生成-" + codeGenTypeEnum.getValue());
-        // 在**调用方线程**上就把「本次生成是否属于评测」定下来，再往下传。
-        // 这里读得到 EvalScope：评测跑批是在自己的用例线程里调进来的；
-        // 而流完成的回调不一定还跑在那条线程上，到那时再读就是恒 false（详见 processCodeStream）。
+        // 必须在调用方线程就把「本次生成是否属于评测」定下来：EvalScope 是 ThreadLocal，
+        // 而流完成回调未必还跑在那条线程上，到回调里再读恒为 false。
         boolean inEvalScope = EvalScope.isActive();
-        // 检索放在预算闸门之后：额度已经告急时，不该先花一次向量化的钱再去撞那堵墙。
-        // 同时它也在「定下 inEvalScope」之后，顺序与既有逻辑保持一致。
+        // 检索放在预算闸门之后：额度告急时不该先花向量化的钱再去撞墙，且须在定下 inEvalScope 之后。
         String projectContext = resolveProjectContext(appId, codeGenTypeEnum, userMessage);
         return switch (codeGenTypeEnum) {
             case HTML -> {

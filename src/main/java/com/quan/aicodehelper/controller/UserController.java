@@ -41,66 +41,31 @@ public class UserController {
     @Autowired
     private UserService userService;
 
-    /**
-     * 保存用户。
-     *
-     * @param user 用户
-     * @return {@code true} 保存成功，{@code false} 保存失败
-     */
     @PostMapping("save")
     public boolean save(@RequestBody User user) {
         return userService.save(user);
     }
 
-    /**
-     * 根据主键删除用户。
-     *
-     * @param id 主键
-     * @return {@code true} 删除成功，{@code false} 删除失败
-     */
     @DeleteMapping("remove/{id}")
     public boolean remove(@PathVariable Long id) {
         return userService.removeById(id);
     }
 
-    /**
-     * 根据主键更新用户。
-     *
-     * @param user 用户
-     * @return {@code true} 更新成功，{@code false} 更新失败
-     */
     @PutMapping("update")
     public boolean update(@RequestBody User user) {
         return userService.updateById(user);
     }
 
-    /**
-     * 查询所有用户。
-     *
-     * @return 所有数据
-     */
     @GetMapping("list")
     public List<User> list() {
         return userService.list();
     }
 
-    /**
-     * 根据主键获取用户。
-     *
-     * @param id 用户主键
-     * @return 用户详情
-     */
     @GetMapping("getInfo/{id}")
     public User getInfo(@PathVariable Long id) {
         return userService.getById(id);
     }
 
-    /**
-     * 分页查询用户。
-     *
-     * @param page 分页对象
-     * @return 分页对象
-     */
     @GetMapping("page")
     public Page<User> page(Page<User> page) {
         return userService.page(page);
@@ -108,10 +73,7 @@ public class UserController {
 
 
     /**
-     * 用户注册
-     *
-     * @param userRegisterRequest 用户注册请求
-     * @return 注册结果
+     * 用户注册。
      */
     @PostMapping("register")
     public BaseResponse userRegister(@RequestBody UserRegisterRequest userRegisterRequest)
@@ -135,9 +97,7 @@ public class UserController {
     }
 
     /**
-     * 获取当前登录用户
-     * @param request
-     * @return
+     * 获取当前登录用户。
      */
     @GetMapping("/get/login")
     public BaseResponse<LoginUserVO> getLoginUser(HttpServletRequest request) {
@@ -145,11 +105,7 @@ public class UserController {
         return ResultUtils.success(userService.getLoginUserVO(loginUser));
     }
 
-    /**
-     * 用户注销
-     * @param request
-     * @return
-     */
+    /** 用户注销。 */
     @PostMapping("/logout")
     public BaseResponse<Boolean> userLogout(HttpServletRequest request)
     {
@@ -158,13 +114,7 @@ public class UserController {
         return ResultUtils.success(result);
     }
 
-    /**
-     * 用户自助更新个人信息（仅限本人，可修改昵称、头像、简介）
-     *
-     * @param userSelfUpdateRequest 自助更新请求
-     * @param request               请求
-     * @return 更新结果
-     */
+    /** 用户自助更新个人信息，仅限本人，可改昵称、头像、简介。 */
     @PostMapping("/update/self")
     public BaseResponse<Boolean> updateUserSelf(@RequestBody UserSelfUpdateRequest userSelfUpdateRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(userSelfUpdateRequest == null, ErrorCode.PARAMS_ERROR);
@@ -180,7 +130,7 @@ public class UserController {
     }
 
     /**
-     * 创建用户
+     * 创建用户（仅管理员）。
      */
     @PostMapping("/add")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
@@ -191,7 +141,6 @@ public class UserController {
         ThrowUtils.throwIf(userService.count(queryWrapper) > 0, ErrorCode.PARAMS_ERROR, "账号已存在");
         User user = new User();
         BeanUtil.copyProperties(userAddRequest, user);
-        // 默认密码 12345678
         final String DEFAULT_PASSWORD = "12345678";
         String encryptPassword = userService.getEncryptPassword(DEFAULT_PASSWORD);
         user.setUserPassword(encryptPassword);
@@ -201,7 +150,7 @@ public class UserController {
     }
 
     /**
-     * 根据 id 获取用户（仅管理员）
+     * 按 id 取用户（仅管理员）。
      */
     @GetMapping("/get")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
@@ -212,9 +161,6 @@ public class UserController {
         return ResultUtils.success(user);
     }
 
-    /**
-     * 根据 id 获取包装类
-     */
     @GetMapping("/get/vo")
     public BaseResponse<UserVO> getUserVOById(long id) {
         BaseResponse<User> response = getUserById(id);
@@ -222,9 +168,6 @@ public class UserController {
         return ResultUtils.success(userService.getUserVO(user));
     }
 
-    /**
-     * 删除用户
-     */
     @PostMapping("/delete")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<Boolean> deleteUser(@RequestBody DeleteRequest deleteRequest) {
@@ -235,9 +178,6 @@ public class UserController {
         return ResultUtils.success(b);
     }
 
-    /**
-     * 更新用户
-     */
     @PostMapping("/update")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<Boolean> updateUser(@RequestBody UserUpdateRequest userUpdateRequest) {
@@ -252,9 +192,7 @@ public class UserController {
     }
 
     /**
-     * 分页获取用户封装列表（仅管理员）
-     *
-     * @param userQueryRequest 查询请求参数
+     * 分页获取用户封装列表（仅管理员），返回前做脱敏。
      */
     @PostMapping("/list/page/vo")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
@@ -264,7 +202,6 @@ public class UserController {
         long pageSize = userQueryRequest.getPageSize();
         Page<User> userPage = userService.page(Page.of(pageNum, pageSize),
                 userService.getQueryWrapper(userQueryRequest));
-        // 数据脱敏
         Page<UserVO> userVOPage = new Page<>(pageNum, pageSize, userPage.getTotalRow());
         List<UserVO> userVOList = userService.getUserVOList(userPage.getRecords());
         userVOPage.setRecords(userVOList);

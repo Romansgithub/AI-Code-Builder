@@ -12,10 +12,8 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 跑批汇总计算测试。
- *
- * <p>这些数字最终会写进报告、拿去讲「自愈有多大用」。算错了没人会察觉，
- * 但结论就全反了 —— 所以这里的边界情况必须逐个锁死。</p>
+ * 跑批汇总计算测试。这些数字会写进报告拿去讲「自愈有多大用」，
+ * 算错了没人会察觉，但结论就全反了。
  */
 @DisplayName("评测汇总计算")
 class EvalRunResultTest {
@@ -305,8 +303,7 @@ class EvalRunResultTest {
         @Test
         @DisplayName("注入用例不计入一次通过率与最终通过率 —— 首轮必失败是它存在的目的")
         void shouldExcludeInjectedFromPassRates() {
-            // 把刻意的失败算进「生成质量」，报告会凭空掉几个点，
-            // 而且掉的那部分恰好是我们自己制造的。
+            // 把刻意的失败算进「生成质量」，报告会凭空掉几个点，而这份失败是刻意制造的
             EvalRunResult.EvalSummary s =
                     EvalRunResult.summarize(eightNormalPlusInjected(true, 1));
 
@@ -361,9 +358,7 @@ class EvalRunResultTest {
         @Test
         @DisplayName("配了注入用例却没有任何用例触发自愈时，报告必须警告而不是显示一切正常")
         void shouldWarnWhenInjectionConfiguredButNoHealing() {
-            // 这正是 2026-09-21 那次跑批的真实情形：注入的 find 串没命中，
-            // 自愈从未被触发，报告却只写着「本次无用例触发自愈」——
-            // 看起来一切正常，实际上整条自愈链路根本没被验证过。
+            // find 串没命中时自愈从未被触发，报告只写「本次无用例触发自愈」，自愈链路根本没被验证过
             EvalRunResult run = new EvalRunResult();
             run.setEvalSetName("集");
             run.setEvalSetVersion("1.3");

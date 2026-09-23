@@ -10,11 +10,8 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 代码切块测试。
- *
- * <p>这块逻辑决定了检索的颗粒度，一旦出错影响是双向的：切太碎会让模型
- * 看到半个函数（改不对），切太粗会让检索命中率下降（捞不到该改的地方）。
- * 所以测试既守「边界是否正确」，也守「内容有没有丢」。</p>
+ * 代码切块测试：切块逻辑决定检索颗粒度，切太碎模型只能看到半个函数，切太粗检索命中率下降。
+ * 既守「边界是否正确」，也守「内容有没有丢」。
  */
 @DisplayName("代码切块")
 class CodeChunkerTest {
@@ -96,7 +93,7 @@ class CodeChunkerTest {
         void windowsOverlap() {
             List<CodeSlice> slices = chunk("src/data.txt", longFile);
 
-            // 第 1 段止于 80 行，第 2 段起于 73 行 ⇒ 重叠 8 行，与配置一致
+            // 第 1 段止于 80 行，第 2 段起于 73 行，重叠 8 行，与配置一致
             assertThat(slices.get(0).endLine() - slices.get(1).startLine() + 1)
                     .isEqualTo(OVERLAP_LINES);
         }
@@ -120,8 +117,7 @@ class CodeChunkerTest {
         @Test
         @DisplayName("重叠不小于上限这种退化配置下仍必须终止，不能死循环")
         void degenerateOverlapStillTerminates() {
-            // 生产路径上不会出现这种配置（RagProperties 会把重叠夹到上限以下），
-            // 这里锁的是「切块器自己也不能因为配置错误而转不出来」
+            // RagProperties 会把重叠夹到上限以下；这里锁的是切块器自己也不能因配置错误转不出来
             List<CodeSlice> slices = CodeChunker.chunk("src/data.txt", longFile,
                     FILE_HASH, 10, 10);
 
@@ -159,7 +155,7 @@ class CodeChunkerTest {
 
             assertThat(slices).hasSize(3);
             assertThat(slices).extracting(CodeSlice::startLine).containsExactly(1, 2, 3);
-            // 第三段吞掉了方法体剩余部分 —— 8 空格以上的缩进不该成为边界
+            // 第三段吞掉了方法体剩余部分，8 空格以上的缩进不该成为边界
             assertThat(slices.get(2).endLine()).isEqualTo(8);
         }
     }

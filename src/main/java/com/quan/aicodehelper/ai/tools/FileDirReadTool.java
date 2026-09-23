@@ -15,25 +15,15 @@ import java.nio.file.Paths;
 import java.util.List;
 import java.util.Set;
 
-/**
- * 文件目录读取工具
- * 使用 Hutool 简化文件操作
- */
 @Slf4j
 @Component
 public class FileDirReadTool extends BaseTool{
 
-    /**
-     * 需要忽略的文件和目录
-     */
     private static final Set<String> IGNORED_NAMES = Set.of(
             "node_modules", ".git", "dist", "build", ".DS_Store",
             ".env", "target", ".mvn", ".idea", ".vscode", "coverage"
     );
 
-    /**
-     * 需要忽略的文件扩展名
-     */
     private static final Set<String> IGNORED_EXTENSIONS = Set.of(
             ".log", ".tmp", ".cache", ".lock"
     );
@@ -57,9 +47,7 @@ public class FileDirReadTool extends BaseTool{
             }
             StringBuilder structure = new StringBuilder();
             structure.append("项目目录结构:\n");
-            // 使用 Hutool 递归获取所有文件
             List<File> allFiles = FileUtil.loopFiles(targetDir, file -> !shouldIgnore(file.getName()));
-            // 按路径深度和名称排序显示
             allFiles.stream()
                     .sorted((f1, f2) -> {
                         int depth1 = getRelativeDepth(targetDir, f1);
@@ -83,25 +71,17 @@ public class FileDirReadTool extends BaseTool{
         }
     }
 
-    /**
-     * 计算文件相对于根目录的深度
-     */
     private int getRelativeDepth(File root, File file) {
         Path rootPath = root.toPath();
         Path filePath = file.toPath();
         return rootPath.relativize(filePath).getNameCount() - 1;
     }
 
-    /**
-     * 判断是否应该忽略该文件或目录
-     */
     private boolean shouldIgnore(String fileName) {
-        // 检查是否在忽略名称列表中
         if (IGNORED_NAMES.contains(fileName)) {
             return true;
         }
 
-        // 检查文件扩展名
         return IGNORED_EXTENSIONS.stream().anyMatch(fileName::endsWith);
     }
 

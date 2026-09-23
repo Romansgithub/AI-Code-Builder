@@ -32,12 +32,6 @@ public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
         return result;
     }
 
-    /**
-     * 根据正则表达式提取代码
-     * @param content
-     * @param pattern
-     * @return
-     */
     private static String extractCodeByPattern(String content, Pattern pattern) {
         Matcher matcher = pattern.matcher(content);
         if (matcher.find())

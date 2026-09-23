@@ -40,7 +40,6 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements U
 
     @Override
     public long userRegister(String userAccount, String userName, String userPassword, String checkPassword) {
-        // 1. 校验
         if (StrUtil.hasBlank(userAccount, userPassword, checkPassword)) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "参数为空");
         }
@@ -53,16 +52,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements U
         if (!userPassword.equals(checkPassword)) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "两次输入的密码不一致");
         }
-        // 2. 检查是否重复
         QueryWrapper queryWrapper = new QueryWrapper();
         queryWrapper.eq("userAccount", userAccount);
         long count = this.mapper.selectCountByQuery(queryWrapper);
         if (count > 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "账号重复");
         }
-        // 3. 加密（BCrypt）
         String encryptPassword = passwordUtils.encode(userPassword);
-        // 4. 插入数据
         User user = new User();
         user.setUserAccount(userAccount);
         user.setUserPassword(encryptPassword);
@@ -87,7 +83,6 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements U
 
     @Override
     public LoginUserVO userLogin(String userAccount, String userPassword, HttpServletRequest request) {
-        // 1. 校验
         if (StrUtil.hasBlank(userAccount, userPassword)) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "参数为空");
         }
@@ -97,28 +92,21 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements U
         if (userPassword.length() < 8) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "密码错误");
         }
-        // 2. 按账号查出用户后校验密码（不能再用「账号+密码」联合查询：
-        //    密码已是加盐哈希，同一明文每次结果不同，无法参与等值比较）
+        // 只能按账号查出后再比对：密码是加盐哈希，同一明文每次结果不同，无法参与等值查询
         QueryWrapper queryWrapper = new QueryWrapper();
         queryWrapper.eq("userAccount", userAccount);
         User user = this.mapper.selectOneByQuery(queryWrapper);
-        // 用户不存在，或密码不匹配（兼容历史 MD5 与新 BCrypt 两种格式）
         if (user == null || !passwordUtils.matches(userPassword, user.getUserPassword())) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户不存在或密码错误");
         }
-        // 3. 渐进式升级：若该用户密码仍是旧的 MD5 格式，登录成功后自动改写为 BCrypt
         upgradePasswordIfNeeded(user, userPassword);
-        // 4. 记录用户的登录态
         request.getSession().setAttribute(USER_LOGIN_STATE, user);
-        // 5. 获得脱敏后的用户信息
         return this.getLoginUserVO(user);
     }
 
     /**
-     * 若用户密码仍为历史 MD5 格式，则在登录成功后自动升级为 BCrypt。
-     *
-     * <p>升级失败不影响本次登录 —— 密码格式迁移属于优化项，
-     * 不应让用户因为迁移异常而无法登录。</p>
+     * 密码若仍是历史 MD5 格式，登录成功后静默升级为 BCrypt。升级失败只记日志，
+     * 不能因为迁移异常让用户登不进来。
      */
     private void upgradePasswordIfNeeded(User user, String rawPassword) {
         if (!passwordUtils.needsUpgrade(user.getUserPassword())) {
@@ -139,13 +127,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements U
 
     @Override
     public User getLoginUser(HttpServletRequest request) {
-        // 先判断是否已登录
         Object userObj = request.getSession().getAttribute(USER_LOGIN_STATE);
         User currentUser = (User) userObj;
         if (currentUser == null || currentUser.getId() == null) {
             throw new BusinessException(ErrorCode.NOT_LOGIN_ERROR);
         }
-        // 从数据库查询（追求性能的话可以注释，直接返回上述结果）
+        // 以库里的最新状态为准，session 里的对象可能已过期
         long userId = currentUser.getId();
         currentUser = this.getById(userId);
         if (currentUser == null) {

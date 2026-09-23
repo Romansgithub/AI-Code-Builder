@@ -23,10 +23,7 @@ public class ScreenshotServiceImpl implements ScreenshotService {
     private CosManager cosManager;
 
     /**
-     * 主功能函数
-     * 生成并上传网页截图
-     * @param webUrl
-     * @return
+     * 生成网页截图并上传到 COS，返回可访问 URL；本地临时文件无论成败都会清理。
      */
     @Override
     public String generateAndUploadScreenshot(String webUrl)
@@ -45,10 +42,7 @@ public class ScreenshotServiceImpl implements ScreenshotService {
         }
     }
 
-    /**
-     * 删除本地截图文件夹
-     * @param localScreenshotPath
-     */
+    /** 删除本地截图文件及其所在目录。 */
     private void cleanupLocalFile(String localScreenshotPath) {
         File localFile = new File(localScreenshotPath);
         if (localFile.exists())
@@ -59,11 +53,7 @@ public class ScreenshotServiceImpl implements ScreenshotService {
         }
     }
 
-    /**
-     * 上传截图到Cos
-     * @param localScreenshotPath
-     * @return
-     */
+    /** 上传截图到 COS，路径为空或文件不存在时返回 null。 */
     private String uploadScreenshotToCos(String localScreenshotPath) {
         if (StrUtil.isBlank(localScreenshotPath))
         {
@@ -80,11 +70,6 @@ public class ScreenshotServiceImpl implements ScreenshotService {
         return cosManager.uploadFile(cosKey, screenshotFile);
     }
 
-    /**
-     * 生成截图的Cos Key
-     * @param fileName
-     * @return
-     */
     private String generateScreenshotKey(String fileName) {
         String dataPath = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy/MM/dd"));
         return String.format("/screenshots/%s%s", dataPath, fileName);

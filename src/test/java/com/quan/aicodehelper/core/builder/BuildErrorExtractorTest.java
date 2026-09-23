@@ -7,10 +7,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 构建错误提取测试。
- *
- * <p>这个类决定了「喂给模型什么内容」，直接影响自愈成功率与 token 消耗，
- * 所以需要把提取规则锁死。</p>
+ * 构建错误提取测试：提取规则决定喂给模型的提示词内容，影响自愈成功率与 token 消耗。
  */
 @DisplayName("构建错误提取器")
 class BuildErrorExtractorTest {
@@ -140,7 +137,7 @@ class BuildErrorExtractorTest {
 
             String result = BuildErrorExtractor.extract(raw);
 
-            // 这一条是回归断言：早期实现会退回「原输出尾部」，等于把刚过滤的噪音又放回来
+            // 回归点：早期实现会退回原输出尾部，把刚过滤的噪音又放回去
             assertThat(result).isEmpty();
         }
 

@@ -1,7 +1,6 @@
 <template>
   <div id="userLoginPage" class="auth-page">
     <div class="auth-card">
-      <!-- 品牌侧栏 -->
       <aside class="auth-brand">
         <BrandLogo :size="38" light />
         <div class="auth-brand-body">
@@ -16,7 +15,6 @@
         <p class="auth-brand-foot">© {{ BRAND.year }} {{ BRAND.copyrightOwner }}</p>
       </aside>
 
-      <!-- 表单 -->
       <div class="auth-form">
         <h1 class="auth-title">欢迎回来</h1>
         <p class="auth-subtitle">登录后继续创建你的应用</p>
@@ -71,13 +69,8 @@ const formState = reactive<API.UserLoginRequest>({
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
 
-/**
- * 提交表单
- * @param values
- */
 const handleSubmit = async (values: API.UserLoginRequest) => {
   const res = await userLogin(values)
-  // 登录成功，把登录态保存到全局状态中
   if (res.data.code === 0 && res.data.data) {
     await loginUserStore.fetchLoginUser()
     message.success('登录成功')

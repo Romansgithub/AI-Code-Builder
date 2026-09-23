@@ -63,12 +63,6 @@ public class AppController {
     private ProjectDownloadService projectDownloadService;
 
 
-    /**
-     * 创建应用（用户）
-     *
-     * @param appAddRequest 创建请求
-     * @return 新应用 id
-     */
     @PostMapping("/add")
     public BaseResponse<Long> addApp(@RequestBody AppAddRequest appAddRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(appAddRequest == null, ErrorCode.PARAMS_ERROR);
@@ -77,13 +71,7 @@ public class AppController {
         return ResultUtils.success(appId);
     }
 
-    /**
-     * 更新应用（用户只能更新自己的应用名称）
-     *
-     * @param appUpdateRequest 更新请求
-     * @param request          请求
-     * @return 更新结果
-     */
+    /** 用户更新应用，仅能改自己应用的名称。 */
     @PostMapping("/update")
     public BaseResponse<Boolean> updateApp(@RequestBody AppUpdateRequest appUpdateRequest, HttpServletRequest request) {
         if (appUpdateRequest == null || appUpdateRequest.getId() == null) {
@@ -91,17 +79,14 @@ public class AppController {
         }
         User loginUser = userService.getLoginUser(request);
         long id = appUpdateRequest.getId();
-        // 判断是否存在
         App oldApp = appService.getById(id);
         ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR);
-        // 仅本人可更新
         if (!oldApp.getUserId().equals(loginUser.getId())) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
         }
         App app = new App();
         app.setId(id);
         app.setAppName(appUpdateRequest.getAppName());
-        // 设置编辑时间
         app.setEditTime(LocalDateTime.now());
         boolean result = appService.updateById(app);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
@@ -109,18 +94,10 @@ public class AppController {
     }
 
 
-    /**
-     * 删除自己的应用（用户）
-     *
-     * @param deleteRequest 删除请求
-     * @return 是否成功
-     */
     @PostMapping("/delete")
     public BaseResponse<Boolean> deleteApp(@RequestBody DeleteRequest deleteRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(deleteRequest == null || deleteRequest.getId() == null, ErrorCode.PARAMS_ERROR);
-        // 获取当前登录用户
         User loginUser = userService.getLoginUser(request);
-        // 校验应用是否存在且属于当前用户
         App app = appService.getById(deleteRequest.getId());
         ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
         ThrowUtils.throwIf(!app.getUserId().equals(loginUser.getId()) && !UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole()), ErrorCode.NO_AUTH_ERROR, "无权删除该应用");
@@ -129,46 +106,29 @@ public class AppController {
         return ResultUtils.success(true);
     }
 
-    /**
-     * 查看应用详情（用户）
-     *
-     * @param id 应用 id
-     * @return 应用详情
-     */
     @GetMapping("/get/vo")
     public BaseResponse<AppVO> getAppVOById(long id, HttpServletRequest request) {
         ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
-        // 获取当前登录用户
         User loginUser = userService.getLoginUser(request);
         App app = appService.getById(id);
         ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        // 检查权限：普通用户只能查看自己的应用，管理员可以查看所有应用
         if (!UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole())) {
             ThrowUtils.throwIf(!app.getUserId().equals(loginUser.getId()), ErrorCode.NO_AUTH_ERROR, "无权查看该应用");
         }
         return ResultUtils.success(appService.getAppVO(app));
     }
 
-    /**
-     * 分页获取当前用户创建的应用列表
-     *
-     * @param appQueryRequest 查询请求
-     * @param request         请求
-     * @return 应用列表
-     */
+    /** 分页获取当前用户创建的应用列表。 */
     @PostMapping("/my/list/page/vo")
     public BaseResponse<Page<AppVO>> listMyAppVOByPage(@RequestBody AppQueryRequest appQueryRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(appQueryRequest == null, ErrorCode.PARAMS_ERROR);
         User loginUser = userService.getLoginUser(request);
-        // 限制每页最多 20 个
         long pageSize = appQueryRequest.getPageSize();
         ThrowUtils.throwIf(pageSize > 20, ErrorCode.PARAMS_ERROR, "每页最多查询 20 个应用");
         long pageNum = appQueryRequest.getPageNum();
-        // 只查询当前用户的应用
         appQueryRequest.setUserId(loginUser.getId());
         QueryWrapper queryWrapper = appService.getQueryWrapper(appQueryRequest);
         Page<App> appPage = appService.page(Page.of(pageNum, pageSize), queryWrapper);
-        // 数据封装
         Page<AppVO> appVOPage = new Page<>(pageNum, pageSize, appPage.getTotalRow());
         List<AppVO> appVOList = appService.getAppVOList(appPage.getRecords());
         appVOPage.setRecords(appVOList);
@@ -176,25 +136,16 @@ public class AppController {
     }
 
 
-    /**
-     * 分页获取精选应用列表
-     *
-     * @param appQueryRequest 查询请求
-     * @return 精选应用列表
-     */
+    /** 分页获取精选应用列表。 */
     @PostMapping("/good/list/page/vo")
     public BaseResponse<Page<AppVO>> listGoodAppVOByPage(@RequestBody AppQueryRequest appQueryRequest) {
         ThrowUtils.throwIf(appQueryRequest == null, ErrorCode.PARAMS_ERROR);
-        // 限制每页最多 20 个
         long pageSize = appQueryRequest.getPageSize();
         ThrowUtils.throwIf(pageSize > 20, ErrorCode.PARAMS_ERROR, "每页最多查询 20 个应用");
         long pageNum = appQueryRequest.getPageNum();
-        // 只查询精选的应用
         appQueryRequest.setPriority(AppConstant.GOOD_APP_PRIORITY);
         QueryWrapper queryWrapper = appService.getQueryWrapper(appQueryRequest);
-        // 分页查询
         Page<App> appPage = appService.page(Page.of(pageNum, pageSize), queryWrapper);
-        // 数据封装
         Page<AppVO> appVOPage = new Page<>(pageNum, pageSize, appPage.getTotalRow());
         List<AppVO> appVOList = appService.getAppVOList(appPage.getRecords());
         appVOPage.setRecords(appVOList);
@@ -202,14 +153,6 @@ public class AppController {
     }
 
 
-    // ==================== 管理员接口 ====================
-
-    /**
-     * 管理员删除应用
-     *
-     * @param deleteRequest 删除请求
-     * @return 是否成功
-     */
     @PostMapping("/admin/delete")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<Boolean> deleteAppByAdmin(@RequestBody DeleteRequest deleteRequest) {
@@ -221,12 +164,7 @@ public class AppController {
         return ResultUtils.success(result);
     }
 
-    /**
-     * 管理员更新应用（支持更新名称、封面、优先级）
-     *
-     * @param appAdminUpdateRequest 管理员更新请求
-     * @return 是否成功
-     */
+    /** 管理员更新应用，可改名称、封面、优先级。 */
     @PostMapping("/admin/update")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<Boolean> updateAppAdmin(@RequestBody AppAdminUpdateRequest appAdminUpdateRequest) {
@@ -241,12 +179,7 @@ public class AppController {
         return ResultUtils.success(true);
     }
 
-    /**
-     * 管理员分页查询应用列表（支持除时间外的任何字段查询，每页数量不限）
-     *
-     * @param appQueryRequest 查询请求
-     * @return 分页结果
-     */
+    /** 管理员分页查询应用列表，不限每页数量。 */
     @PostMapping("/admin/list/page/vo")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<Page<AppVO>> listAppVOPageByAdmin(@RequestBody AppQueryRequest appQueryRequest) {
@@ -261,12 +194,6 @@ public class AppController {
         return ResultUtils.success(appVOPage);
     }
 
-    /**
-     * 管理员查看应用详情
-     *
-     * @param id 应用 id
-     * @return 应用详情
-     */
     @GetMapping("/admin/get/vo")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<AppVO> getAppVOByIdAdmin(long id) {
@@ -279,18 +206,8 @@ public class AppController {
     /**
      * 发起代码生成（写操作）。
      *
-     * <p><b>为什么从 GET 改成 POST</b>：这个端点会真实触发代码生成 ——
-     * 写对话记录、消耗模型 token、落盘文件、可能跑 npm 构建。
-     * 把它放在 GET 上，等于允许「浏览器自动重放的请求」去做写操作：
-     * 网络一抖，EventSource 就会带着同一个 URL 自动重连，
-     * 服务端老老实实再生成一遍。这是重复生成事故的直接来源。</p>
-     *
-     * <p>POST 之后浏览器不会自动重放（fetch 不会自动重试非幂等请求），
-     * 且消息体可以放在 body 里，不再受 URL 长度限制。</p>
-     *
-     * <p><b>响应是普通 JSON 而不是流</b>：本端点只负责「把任务启动起来」并立刻返回。
-     * 进度与内容由 {@code /chat/gen/stream} 独立订阅，
-     * 这样连接断开不会波及生成，重连也不会重新启动生成。</p>
+     * <p>必须用 POST：这是真实写操作（写记录、耗 token、落盘、可能跑构建），而 GET 会被 EventSource 在
+     * 断线时自动重放导致重复生成。响应是普通 JSON，只负责启动任务，进度交给 {@code /chat/gen/stream} 订阅。</p>
      */
     @PostMapping("/chat/gen/code")
     public BaseResponse<GenerateCodeVO> generateCode(@RequestBody GenerateCodeRequest generateCodeRequest,
@@ -301,16 +218,14 @@ public class AppController {
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
         ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "消息不能为空");
 
-        // 记下请求进来的时刻：service 返回的任务若创建时间早于它，
-        // 说明本次请求没有真正启动生成，而是复用了本来就存在的任务
+        // 记下请求进入的时刻，下面用它判断 service 返回的任务是不是复用来的旧任务
         long requestStartedAt = System.currentTimeMillis();
 
-        // 权限校验与任务抢占都在 service 层：已有进行中任务时不报错，而是交回既有任务，
-        // 这正是「重连不重启生成」的落点。
+        // 权限校验与任务抢占都在 service 层：已有进行中任务时不报错而是交回既有任务
         User loginUser = userService.getLoginUser(request);
         GenerationTask task = appService.startGeneration(appId, message, loginUser);
         GenerateCodeVO vo = GenerateCodeVO.of(appId, task);
-        // 复用已有任务时明确告知前端：它接的是「刚才那次生成」，不是新起了一次
+        // 复用已有任务时告知前端，避免它误判为新起了一次生成
         vo.setReused(!task.isRunning() || task.getCreatedAt() < requestStartedAt);
         return ResultUtils.success(vo);
     }
@@ -318,13 +233,8 @@ public class AppController {
     /**
      * 订阅代码生成进度（读操作，可安全重放）。
      *
-     * <p>与触发端点的分工是这次改造的核心：读接口重复执行只是「多听一遍」，
-     * 写接口重复执行才是事故。拆开之后，即便代理、浏览器或用户手工重试这个 GET，
-     * 代价也仅仅是多一条订阅连接。</p>
-     *
-     * <p><b>断点续传</b>：前端通过 {@code Last-Event-ID} 头（或 query 参数）告知
-     * 自己最后收到的事件序号，服务端从事件缓冲里补齐错过的部分再接着推。
-     * 用请求头而非 query 是遵循 SSE 规范 —— 浏览器原生重连会自动带上这个头。</p>
+     * <p>断点续传用 {@code Last-Event-ID} 请求头：它是 SSE 规范字段，浏览器原生重连会自动携带，
+     * 将来换回原生 EventSource 仍可续传；query 参数只作显式补充。</p>
      */
     @GetMapping(value = "/chat/gen/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> subscribeGenStream(@RequestParam Long appId,
@@ -358,11 +268,7 @@ public class AppController {
     }
 
     /**
-     * 解析续传起点。
-     *
-     * <p>优先取 {@code Last-Event-ID} 请求头：这是 SSE 规范定义的字段，
-     * 浏览器原生重连会自动携带，遵循它意味着将来换回原生 EventSource 也能续传。
-     * query 参数只作为显式指定的补充。</p>
+     * 解析续传起点，优先取 SSE 规范的 {@code Last-Event-ID} 请求头，query 参数作补充。
      */
     private long resolveLastEventId(HttpServletRequest request, Long queryValue) {
         String header = request.getHeader("Last-Event-ID");
@@ -376,12 +282,7 @@ public class AppController {
         return queryValue == null || queryValue < 0 ? 0L : queryValue;
     }
 
-    /**
-     * 部署应用
-     * @param appDeployRequest
-     * @param request
-     * @return
-     */
+    /** 部署应用，返回可访问的部署地址。 */
     @PostMapping("/deploy")
     public BaseResponse<String> deployApp(@RequestBody AppDeployRequest appDeployRequest, HttpServletRequest request)
     {
@@ -393,12 +294,7 @@ public class AppController {
         return ResultUtils.success(deployUrl);
     }
 
-    /**
-     * 下载应用代码
-     * @param appId
-     * @param request
-     * @param response
-     */
+    /** 打包下载应用源码，仅应用作者本人可下载。 */
     @GetMapping("/download/{appId}")
     public void downloadAppCode(@PathVariable Long appId, HttpServletRequest request, HttpServletResponse response){
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");

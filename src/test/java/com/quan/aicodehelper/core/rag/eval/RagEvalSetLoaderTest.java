@@ -18,12 +18,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 检索评测集的加载与校验。
- *
- * <p>这些用例守的是一条原则：<b>配置错误必须在跑之前炸掉</b>。
- * 评测集的产物是一串会被写进文档与答辩材料的召回率数字，
- * 而配置错误在这里的表现是「指标静默变 0」—— 看起来像「检索做得很差」，
- * 于是人会去调参数、改权重，永远不会想到是 appId 填成了负数。</p>
+ * 检索评测集的加载与校验。配置错误必须在跑之前炸掉：评测集的产物是会被写进文档与答辩
+ * 材料的召回率数字，而配置错误在这里的表现是「指标静默变 0」，看起来像检索做得差。
  */
 @DisplayName("检索评测集加载与校验")
 class RagEvalSetLoaderTest {
@@ -47,9 +43,7 @@ class RagEvalSetLoaderTest {
         assertThat(countOf(set, RetrievalKind.POINTED))
                 .as("点名型与语义型必须都有足够样本，否则消融时会得出「向量没用」的假结论")
                 .isEqualTo(8);
-        // 20 这个下限不是凑数：配对比较只看「两组一捞到一没捞到」的不一致对，
-        // 两侧符号检验要 p<0.05 至少需要 6 个单向不一致对，而 v1.0 只有 3 个（p=0.25）。
-        // 语义型 8 条时单条用例摆动 12.5 个百分点，样本再少就只是在拟合噪声。
+        // 20 这个下限不是凑数：符号检验要 p<0.05 至少需要 6 个单向不一致对，样本再少就是拟合噪声
         assertThat(countOf(set, RetrievalKind.SEMANTIC))
                 .as("语义型样本不足时，「向量把召回从 50% 提到 87.5%」这类结论在统计上站不住")
                 .isGreaterThanOrEqualTo(20);
@@ -200,9 +194,7 @@ class RagEvalSetLoaderTest {
         return set.getCases().stream().filter(c -> c.getKind() == kind).count();
     }
 
-    /**
-     * 生成一份只含单条用例的最小评测集，用来把某个 query 字面量单独喂给校验。
-     */
+    /** 生成只含单条用例的最小评测集，把某个 query 字面量单独喂给校验 */
     private static String caseJson(String kind, String query) {
         return """
                 {
@@ -220,11 +212,8 @@ class RagEvalSetLoaderTest {
     }
 
     /**
-     * 生成一份最小可用评测集，只把需要构造异常的字段参数化。
-     *
-     * <p>参数是原始 JSON 片段（如 {@code "\"tour\""}、{@code "[\"src/App.vue\"]"}），
-     * 因为校验针对的正是这些字面量 —— 若在这里先解析再回写，就测不到
-     * 「标注写法本身有问题」这类情形了。</p>
+     * 生成一份最小可用评测集，只把需要构造异常的字段参数化。参数保持原始 JSON 片段，
+     * 因为校验针对的就是这些字面量，先解析再回写就测不到「标注写法本身有问题」的情形。
      */
     private static String sampleJson(String appId, String caseAppKey,
                                      String expectedFilesJson, String caseId) {

@@ -19,23 +19,13 @@ public class CosManager {
     @Resource
     private COSClient cosClient;
 
-    /**
-     * 上传对象到cos
-     * @param key
-     * @param file
-     * @return
-     */
+    /** 上传对象到 COS，返回上传结果。 */
     public PutObjectResult putObjectResult(String key, File file) {
         PutObjectRequest putObjectRequest = new PutObjectRequest(cosClientConfig.getBucket(), key, file);
         return cosClient.putObject(putObjectRequest);
     }
 
-    /**
-     * 上传对象到cos并返回url
-     * @param key
-     * @param file
-     * @return
-     */
+    /** 上传并返回可访问 URL，上传失败返回 null。 */
     public String uploadFile(String key, File file)
     {
         PutObjectResult result = putObjectResult(key,file);

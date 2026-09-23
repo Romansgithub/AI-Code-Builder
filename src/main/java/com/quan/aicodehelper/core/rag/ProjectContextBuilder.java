@@ -9,22 +9,8 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 
 /**
- * 把检索结果渲染成「注入给模型的项目上下文」文本。
- *
- * <p><b>这段文本会进 system message，不是 userMessage</b>。
- * 原因是生成服务上挂着输入护栏（{@code PromptSafetyInputGuardrail}），
- * 它管两件事：用户输入不超过 1000 字、且不含提示词注入特征。
- * 检索内容两项都会踩雷 ——</p>
- * <ul>
- *   <li>几 KB 的代码，长度上必然超限；</li>
- *   <li>代码里出现 {@code systemPrompt: "You are ..."} 这类字面量时，
- *       会被注入模式误判成攻击，把整个请求拒掉 ——
- *       而且这种失败是「看起来像内容不合规」的，很难联想到是检索引入的。</li>
- * </ul>
- * <p>更根本的是语义：护栏的对象是「用户在聊天框里敲的话」，
- * 而检索片段是平台自己从磁盘读来的资料。把两者混在一起，
- * 既是安全模型上的错配，也必然带来这组长度与模式的冲突。
- * 这和构建自愈当年踩的坑是同一个（见 {@code AiCodeHealingService} 的类注释）。</p>
+ * 把检索结果渲染成注入 system message 的项目上下文文本。进 system 而非 user：检索内容体积大
+ * 且带注入特征，会踩生成服务的输入护栏；它又是平台自取资料，与「用户敲的话」混在一起是安全模型错配。
  */
 @Slf4j
 @Service
@@ -34,11 +20,10 @@ public class ProjectContextBuilder {
     private RagProperties ragProperties;
 
     /**
-     * 构建注入文本。
+     * 构建注入 system message 的文本。
      *
-     * @param type   当前工程的生成类型
-     * @param slices 检索结果（已按相关度降序）
-     * @return 注入 system message 的文本；无可用片段时返回空串
+     * @param slices 检索结果，已按相关度降序
+     * @return 注入文本；无可用片段或功能未开启返回空串
      */
     public String build(CodeGenTypeEnum type, List<RetrievedSlice> slices) {
         if (!ragProperties.isEnabled() || slices == null || slices.isEmpty() || type == null) {
@@ -63,8 +48,7 @@ public class ProjectContextBuilder {
         }
 
         if (included == 0) {
-            // 单条片段就超预算时，至少保留一条（截断）——
-            // 零上下文与「有一点上下文」的差别，远大于「完整片段」与「截断片段」的差别
+            // 单条就超预算时至少保留一条（截断）：零上下文远差于有一点上下文
             String rendered = renderSlice(1, slices.get(0));
             body.append(truncate(rendered, budget));
             return header + body + footer;
@@ -108,10 +92,7 @@ public class ProjectContextBuilder {
         return text.substring(0, keep) + "\n…（片段已截断）\n";
     }
 
-    /**
-     * 代码块的语言标记。标错会让部分模型把内容当成另一种语法解读，
-     * 认不出来时宁可留空。
-     */
+    /** 代码块语言标记；标错会让模型误读语法，认不出时留空。 */
     private static String fenceLanguage(String filePath) {
         if (filePath == null) {
             return "";

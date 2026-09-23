@@ -27,11 +27,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * 检索召回指标计算。
- *
- * <p>这些断言守的是「指标本身没错」—— 与检索算法无关。之所以值得单独测，
- * 是因为指标算错时的表现形式与「检索效果差」一模一样（都是低分），
- * 而人会先去怀疑检索算法、去调参数，很难想到是分母算错了。</p>
+ * 检索召回指标计算：守的是「指标本身没错」，与检索算法无关。指标算错时的表现与
+ * 「检索效果差」一模一样，人都先去怀疑检索算法，很难想到是分母算错了。
  */
 @DisplayName("检索召回评测执行器")
 class RagEvalRunnerTest {
@@ -384,8 +381,7 @@ class RagEvalRunnerTest {
             ReflectionTestUtils.setField(runner, "ragProperties", new RagProperties());
             ReflectionTestUtils.setField(runner, "embeddingClient", embeddingClient());
 
-            // 第一条：榜首关键词分为 0 —— 它排第一只可能是向量推上去的
-            // 第二条：榜首关键词分 0.6 —— 字面命中就足以解释，说明不了向量有没有用
+            // 榜首关键词分为 0 时排第一只可能是向量推上去的；分为 0.6 时字面命中就足以解释
             when(codeRetriever.retrieve(anyLong(), any(CodeGenTypeEnum.class), anyString()))
                     .thenReturn(List.of(new RetrievedSlice(NAVBAR, 1, 20, "//c", 0.9D, 0.78D, 0D)))
                     .thenReturn(List.of(new RetrievedSlice(HOME, 1, 20, "//c", 0.9D, 0.83D, 0.6D)));
@@ -416,8 +412,7 @@ class RagEvalRunnerTest {
     }
 
     /**
-     * 造一组完整的配置结果。三份汇总都要给上 —— 报告渲染会无条件遍历它们，
-     * 漏一个就是 NPE，而不是「这块不印」。
+     * 造一组完整的配置结果。三份汇总都要给上，报告渲染会无条件遍历它们，漏一个就是 NPE。
      */
     private static RagEvalResult.ModeResult modeOf(String name, double vectorWeight,
                                                    double keywordWeight,
@@ -436,11 +431,8 @@ class RagEvalRunnerTest {
     }
 
     /**
-     * 造一条只有用例号与名次的用例结果，供清单类渲染用。
-     *
-     * <p>期望文件也一并填上 —— 缺了它会让人在做反向验证时红出一个
-     * {@code IndexOutOfBounds}：那种红同样来自「改错了地方」，但看起来像数据不全，
-     * 分不清是哪一处决定导致的，属于假信号。</p>
+     * 造一条只有用例号与名次的用例结果。期望文件也一并填上：缺了它做反向验证时会红出
+     * 一个 {@code IndexOutOfBounds}，那种红看起来像数据不全，属于假信号。
      */
     private static RagEvalResult.CaseOutcome outcomeOf(String caseId, int firstHitRank,
                                                       String... retrievedFiles) {

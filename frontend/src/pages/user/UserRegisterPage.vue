@@ -1,7 +1,6 @@
 <template>
   <div id="userRegisterPage" class="auth-page">
     <div class="auth-card">
-      <!-- 品牌侧栏 -->
       <aside class="auth-brand">
         <BrandLogo :size="38" light />
         <div class="auth-brand-body">
@@ -16,7 +15,6 @@
         <p class="auth-brand-foot">© {{ BRAND.year }} {{ BRAND.copyrightOwner }}</p>
       </aside>
 
-      <!-- 表单 -->
       <div class="auth-form">
         <h1 class="auth-title">创建账号</h1>
         <p class="auth-subtitle">注册后即可开始生成你的第一个应用</p>
@@ -100,12 +98,6 @@ const formState = reactive<API.UserRegisterRequest>({
   checkPassword: '',
 })
 
-/**
- * 验证确认密码
- * @param rule
- * @param value
- * @param callback
- */
 const validateCheckPassword = (rule: unknown, value: string, callback: (error?: Error) => void) => {
   if (value && value !== formState.userPassword) {
     callback(new Error('两次输入密码不一致'))
@@ -114,13 +106,8 @@ const validateCheckPassword = (rule: unknown, value: string, callback: (error?: 
   }
 }
 
-/**
- * 提交表单
- * @param values
- */
 const handleSubmit = async (values: API.UserRegisterRequest) => {
   const res = await userRegister(values)
-  // 注册成功，跳转到登录页面
   if (res.data.code === 0) {
     message.success('注册成功')
     router.push({

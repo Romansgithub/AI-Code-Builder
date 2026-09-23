@@ -27,43 +27,21 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 检索评测集加载器。
- *
- * <p><b>为什么手工解析而不是 toBean</b>：与 {@link com.quan.aicodehelper.core.eval.EvalSetLoader}
- * 同样的原因 —— {@link CodeGenTypeEnum} 的常量名与业务 value 不一致，
- * 自动转换会抛 {@code ConvertException}；而且评测集是人工维护的，
- * 作者写 {@code vue_project} 和写 {@code VUE_PROJECT} 都很自然，两种都得认。</p>
- *
- * <p><b>为什么校验必须严格</b>：这个评测集的产物是一串「召回率」数字，
- * 会被写进文档与答辩材料。配置错误在这里造成的后果是<b>指标静默变 0</b> ——
- * 例如 appId 误填成负数时，检索器会按「评测会话」快速返回空，
- * 跑出来是「召回率 0%」，看起来像「检索做得很差」而不是「配置填错了」。
- * 错误的指标比没有指标更危险，因为它看起来可信。所以宁可抛异常。</p>
+ * 检索评测集加载器。手工解析而非 toBean（枚举常量名与业务 value 不一致，且人工维护的写法大小写都得认）；校验严格：配置错会让指标静默变 0，比没有指标更危险，故宁可抛异常。
  */
 @Slf4j
 @Component
 public class RagEvalSetLoader {
 
-    /**
-     * 语义型用例里不允许出现的「文件名 / 扩展名」线索。
-     */
     private static final Pattern FILE_CLUE = Pattern.compile(
             "\\.(vue|js|css|html|json)\\b", Pattern.CASE_INSENSITIVE);
 
-    /**
-     * 语义型用例里不允许出现的驼峰标识符（如 {@code localStorage}、{@code Navbar}）。
-     */
     private static final Pattern IDENTIFIER_CLUE = Pattern.compile("[a-z]+[A-Z][A-Za-z]*");
 
     @Resource
     private RagProperties ragProperties;
 
-    /**
-     * 加载并校验检索评测集。
-     *
-     * @return 评测集
-     * @throws BusinessException 资源缺失、JSON 非法或校验不通过
-     */
+    /** 加载并校验检索评测集。@throws BusinessException 资源缺失、JSON 非法或校验不通过 */
     public RagEvalSet load() {
         String path = ragProperties.getEvalSetPath();
         String content;
@@ -93,12 +71,7 @@ public class RagEvalSetLoader {
         return evalSet;
     }
 
-    /**
-     * 解析评测集 JSON。
-     *
-     * <p>包可见而非 private：校验规则是「防止指标静默变 0」的唯一防线，
-     * 必须能针对非法配置逐一测试。只测真实那一份评测集是测不出边界的。</p>
-     */
+    /** 解析评测集 JSON。包可见以便单测覆盖各校验分支（防止指标静默变 0 的唯一防线）。 */
     RagEvalSet parse(String content) {
         JSONObject root = JSONUtil.parseObj(content);
         RagEvalSet evalSet = new RagEvalSet();
@@ -142,13 +115,7 @@ public class RagEvalSetLoader {
         return evalSet;
     }
 
-    /**
-     * 读取期望文件清单，并统一成「正斜杠 + 相对工程根」的写法。
-     *
-     * <p>归一化是必须的：检索结果里的 filePath 一律是正斜杠相对路径，
-     * 标注时手滑写成 {@code src\components\Navbar.vue} 就会全部匹配不上，
-     * 表现为「检索一条都没命中」，而实际上检索是对的。</p>
-     */
+    /** 读取期望文件清单并统一为「正斜杠 + 相对工程根」。否则标注写成 src\... 会全部匹配不上，误判检索失效。 */
     private List<String> readFiles(JSONObject node, int index, String caseId) {
         JSONArray array = node.getJSONArray("expectedFiles");
         List<String> files = new java.util.ArrayList<>();
@@ -203,9 +170,7 @@ public class RagEvalSetLoader {
                         + Arrays.toString(CodeGenTypeEnum.values()));
     }
 
-    /**
-     * 校验评测集完整性。包可见以便单测覆盖各条校验分支。
-     */
+    /** 校验评测集完整性。包可见以便单测覆盖各校验分支。 */
     void validate(RagEvalSet evalSet) {
         if (StrUtil.isBlank(evalSet.getVersion())) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR,
@@ -227,8 +192,7 @@ public class RagEvalSetLoader {
             if (!keys.add(app.getKey())) {
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR, "评测应用 key 重复：" + app.getKey());
             }
-            // 负数 appId 是评测会话的约定，检索器会直接返回空。
-            // 写进来只会得到「召回率 0%」这种看起来像检索很差的假结论，必须在配置期拦下。
+            // 负数 appId 是评测会话约定，检索器直接返回空，写进来会得到「召回率 0%」假结论，须在配置期拦下
             if (app.getAppId() <= 0) {
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                         "应用「" + app.getKey() + "」的 appId 必须为正数（当前 "
@@ -275,14 +239,13 @@ public class RagEvalSetLoader {
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                         "用例「" + c.getId() + "」的 kind 无法识别");
             }
-            // appKey 写错会让这条用例静默跑在空应用上，最终表现为「怎么检索都命中不了」
+            // appKey 写错会让用例静默跑在空应用上，表现为「怎么检索都命中不了」
             if (!appKeys.contains(c.getAppKey())) {
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                         "用例「" + c.getId() + "」引用了不存在的 appKey：" + c.getAppKey()
                                 + "，已定义的有 " + appKeys);
             }
-            // 语义型混进代码标识符，这条用例就退化成关键词题，
-            // 却仍然被算在语义型的分母里 —— 指标失真得毫无痕迹
+            // 语义型混进代码标识符会退化成关键词题却仍计入语义型分母，指标失真毫无痕迹
             if (c.getKind() == RetrievalKind.SEMANTIC) {
                 validateSemanticHasNoCodeClue(c);
             }
@@ -291,13 +254,7 @@ public class RagEvalSetLoader {
     }
 
     /**
-     * 校验语义型用例的 query 里没有代码线索。
-     *
-     * <p><b>为什么必须拦</b>：语义型这一组的全部意义，是度量「需求里没有任何代码标识符时
-     * 检索还能不能找对文件」。一旦 query 里写了 {@code Navbar.vue} 或 {@code localStorage}，
-     * 关键词侧立刻就能命中，这条用例便不再是语义题 —— 但它照样进语义型的分母，
-     * 于是语义型的召回率被抬高、向量的增量收益被抹平，而报告里看不出任何异常。
-     * 这比配置写错更隐蔽：配置错会让指标变成 0，谁都看得见；这个是让指标悄悄变好。</p>
+     * 校验语义型用例 query 不含代码线索：点名文件或标识符后关键词侧即命中，用例不再是语义题却仍进分母，抬高召回、抹平向量收益。
      */
     private void validateSemanticHasNoCodeClue(RagEvalCase c) {
         Matcher file = FILE_CLUE.matcher(c.getQuery());
@@ -316,13 +273,7 @@ public class RagEvalSetLoader {
         }
     }
 
-    /**
-     * 校验期望文件路径。
-     *
-     * <p>只允许相对路径且不得跳出工程根：这个字段是拿来做字符串比对的，
-     * 一个 {@code ../} 或盘符路径永远不会等于检索结果里的相对路径，
-     * 于是该用例恒不命中，而看报告的人只会以为检索漏了它。</p>
-     */
+    /** 校验期望文件路径：只许相对路径且不得跳出工程根，否则恒不等于检索结果相对路径而误判漏召。 */
     private void validateExpectedFiles(RagEvalCase c) {
         if (c.getExpectedFiles().isEmpty()) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR,

@@ -6,11 +6,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 检索召回评测集。
- *
- * <p>与代码生成评测集（{@code codegen-eval-set.json}）是两套东西，刻意不合并：
- * 那套度量「生成得怎么样」，这套度量「检索得准不准」。合并会让两边的口径互相污染 ——
- * 生成评测必须隔离掉检索增强（负数 appId），否则跨版本指标不可比。</p>
+ * 检索召回评测集。与代码生成评测集（{@code codegen-eval-set.json}）刻意不合并：那套度量「生成得怎么样」，
+ * 这套度量「检索得准不准」；合并会让口径互相污染，生成评测必须隔离掉检索增强（负数 appId）才可比。
  */
 @Data
 public class RagEvalSet {

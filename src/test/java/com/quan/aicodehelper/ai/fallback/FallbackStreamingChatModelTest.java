@@ -18,17 +18,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 模型降级装饰器测试。
- *
- * <p>用一个可控的假模型替代真实模型：指定它在第几次调用时失败、失败前是否
- * 先吐几个 token。这样才能覆盖「已输出一半再失败」这种真实但难复现的场景。</p>
+ * 模型降级装饰器测试：用可控假模型覆盖「已输出一半再失败」等真实但难复现的场景。
  */
 @DisplayName("降级流式模型")
 class FallbackStreamingChatModelTest {
 
-    /**
-     * 可控的假模型。
-     */
     private static class FakeModel implements StreamingChatModel {
 
         private final String name;
@@ -66,9 +60,7 @@ class FallbackStreamingChatModelTest {
         }
     }
 
-    /**
-     * 一次调用的行为：先吐 N 个 token，再成功或失败。
-     */
+    /** 一次调用的行为：先吐 N 个 token，再成功或失败 */
     private record Behavior(int partialTokens, Throwable error) {
         static Behavior success() {
             return new Behavior(0, null);
@@ -87,9 +79,6 @@ class FallbackStreamingChatModelTest {
         }
     }
 
-    /**
-     * 收集结果的 handler。
-     */
     private static class CollectingHandler implements StreamingChatResponseHandler {
         final List<String> tokens = new ArrayList<>();
         ChatResponse response;
@@ -209,9 +198,7 @@ class FallbackStreamingChatModelTest {
         @Test
         @DisplayName("同步抛异常（不走 onError）也能触发降级")
         void shouldHandleSynchronousThrow() {
-            // 有些实现会同步抛而不是回调 onError，两条路径都要接住，
-            // 否则降级在这种实现上会静默失效。
-            // 注意 StreamingChatModel 有 default 方法、不是函数接口，只能用匿名类
+            // 同步抛与 onError 两条路径都要接住，否则降级会静默失效
             StreamingChatModel throwing = new StreamingChatModel() {
                 @Override
                 public void doChat(ChatRequest chatRequest, StreamingChatResponseHandler handler) {
@@ -239,9 +226,8 @@ class FallbackStreamingChatModelTest {
         @Test
         @DisplayName("已输出部分内容后失败，绝不降级 —— 否则产生拼接乱码")
         void shouldNotFallbackAfterPartialOutput() {
-            // 这是本组最重要的一条。流式响应不可回滚：若主模型吐了 2 个 token
-            // 后失败再切备用模型重新生成，用户拿到的是「主模型前 2 token +
-            // 备用模型完整输出」，比直接报错更糟 —— 它是静默的。
+            // 流式响应不可回滚，主模型吐了 token 后失败再切备用，用户会拿到拼接乱码，
+            // 比直接报错更糟（且静默）
             FakeModel primary = new FakeModel("primary",
                     Behavior.failAfterTokens(2, new RateLimitException("mid-stream failure")));
             FakeModel backup = new FakeModel("backup", Behavior.successWithTokens(1));
@@ -334,8 +320,7 @@ class FallbackStreamingChatModelTest {
         @Test
         @DisplayName("重试次数不因「已输出」标志在候选间串味而误判")
         void producedFlagShouldNotLeakAcrossCandidates() {
-            // 每个候选独占「是否已输出」标志。若跨候选复用，
-            // 主模型吐过 token 后会让备用模型误以为「也不能降级」
+            // 每个候选独占「是否已输出」标志，跨候选复用会让备用模型误判为不能降级
             FakeModel primary = new FakeModel("primary",
                     Behavior.successWithTokens(1), Behavior.success());
             FakeModel backup = new FakeModel("backup", Behavior.success());

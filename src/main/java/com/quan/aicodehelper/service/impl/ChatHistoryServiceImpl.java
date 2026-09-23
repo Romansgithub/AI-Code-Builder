@@ -65,11 +65,6 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         return this.remove(queryWrapper);
     }
 
-    /**
-     * 获取查询条件
-     * @param chatHistoryQueryRequest
-     * @return
-     */
     @Override
     public QueryWrapper getQueryWrapper(ChatHistoryQueryRequest chatHistoryQueryRequest){
         QueryWrapper queryWrapper = QueryWrapper.create();
@@ -99,14 +94,6 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         return queryWrapper;
     }
 
-    /**
-     * 分页获取应用对话历史
-     * @param appId
-     * @param pageSize
-     * @param lastCreateTime
-     * @param loginUser
-     * @return
-     */
     @Override
     public Page<ChatHistory> listAppChatHistoryByPage(Long appId, int pageSize, LocalDateTime lastCreateTime, User loginUser)
     {
@@ -126,11 +113,9 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
     }
 
     /**
-     * 加载应用对话历史到内存
-     * @param appId
-     * @param chatMemory
-     * @param maxCount
-     * @return
+     * 把应用的历史消息按时间正序灌进内存，返回实际加载条数。
+     *
+     * <p>失败只记日志并返回 0，不向上抛：记忆回填是生成的前置准备，它失败不该让生成整体失败。</p>
      */
     @Override
     public int loadChatHistoryToMemory(Long appId, MessageWindowChatMemory chatMemory, int maxCount)

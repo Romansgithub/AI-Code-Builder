@@ -1,12 +1,10 @@
 <template>
   <a-layout-header class="header">
     <div class="header-inner">
-      <!-- 品牌 -->
       <RouterLink to="/" class="header-brand">
         <BrandLogo :size="34" />
       </RouterLink>
 
-      <!-- 导航 -->
       <nav class="header-nav">
         <a
           v-for="item in visibleNavItems"
@@ -19,7 +17,6 @@
         </a>
       </nav>
 
-      <!-- 用户操作 -->
       <div class="header-actions">
         <template v-if="loginUserStore.loginUser.id">
           <a-button type="primary" @click="startCreate">开始创作</a-button>

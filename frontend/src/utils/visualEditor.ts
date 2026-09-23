@@ -1,7 +1,3 @@
-/**
- * 可视化编辑器工具类
- * 负责管理iframe内的可视化编辑功能
- */
 export interface ElementInfo {
   tagName: string
   id: string
@@ -31,16 +27,10 @@ export class VisualEditor {
     this.options = options
   }
 
-  /**
-   * 初始化编辑器
-   */
   init(iframe: HTMLIFrameElement) {
     this.iframe = iframe
   }
 
-  /**
-   * 开启编辑模式
-   */
   enableEditMode() {
     if (!this.iframe) {
       return
@@ -51,24 +41,17 @@ export class VisualEditor {
     }, 300)
   }
 
-  /**
-   * 关闭编辑模式
-   */
   disableEditMode() {
     this.isEditMode = false
     this.sendMessageToIframe({
       type: 'TOGGLE_EDIT_MODE',
       editMode: false,
     })
-    // 清除所有编辑状态
     this.sendMessageToIframe({
       type: 'CLEAR_ALL_EFFECTS',
     })
   }
 
-  /**
-   * 切换编辑模式
-   */
   toggleEditMode() {
     if (this.isEditMode) {
       this.disableEditMode()
@@ -78,9 +61,6 @@ export class VisualEditor {
     return this.isEditMode
   }
 
-  /**
-   * 强制同步状态并清理
-   */
   syncState() {
     if (!this.isEditMode) {
       this.sendMessageToIframe({
@@ -89,34 +69,24 @@ export class VisualEditor {
     }
   }
 
-  /**
-   * 清除选中的元素
-   */
   clearSelection() {
     this.sendMessageToIframe({
       type: 'CLEAR_SELECTION',
     })
   }
 
-  /**
-   * iframe 加载完成时调用
-   */
   onIframeLoad() {
     if (this.isEditMode) {
       setTimeout(() => {
         this.injectEditScript()
       }, 500)
     } else {
-      // 确保非编辑模式时清理状态
       setTimeout(() => {
         this.syncState()
       }, 500)
     }
   }
 
-  /**
-   * 处理来自 iframe 的消息
-   */
   handleIframeMessage(event: MessageEvent) {
     const { type, data } = event.data
     switch (type) {
@@ -133,25 +103,18 @@ export class VisualEditor {
     }
   }
 
-  /**
-   * 向 iframe 发送消息
-   */
   private sendMessageToIframe(message: Record<string, any>) {
     if (this.iframe?.contentWindow) {
       this.iframe.contentWindow.postMessage(message, '*')
     }
   }
 
-  /**
-   * 注入编辑脚本到 iframe
-   */
   private injectEditScript() {
     if (!this.iframe) return
 
     const waitForIframeLoad = () => {
       try {
         if (this.iframe!.contentWindow && this.iframe!.contentDocument) {
-          // 检查是否已经注入过脚本
           if (this.iframe!.contentDocument.getElementById('visual-edit-script')) {
             this.sendMessageToIframe({
               type: 'TOGGLE_EDIT_MODE',
@@ -169,16 +132,12 @@ export class VisualEditor {
           setTimeout(waitForIframeLoad, 100)
         }
       } catch {
-        // 静默处理注入失败
       }
     }
 
     waitForIframeLoad()
   }
 
-  /**
-   * 生成编辑脚本内容
-   */
   private generateEditScript() {
     return `
       (function() {

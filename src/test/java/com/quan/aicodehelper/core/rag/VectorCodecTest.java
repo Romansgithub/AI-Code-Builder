@@ -8,12 +8,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 向量编解码与相似度计算测试。
- *
- * <p>最要紧的一条：零向量、维度不一致这些「算不出相似度」的情形必须返回 0
- * 而不是抛出或返回 {@code NaN}。检索链路上它俩的处理方式完全相同（都算不相关），
- * 而 {@code NaN} 参与排序不会报错、只会让结果顺序变得无从解释 ——
- * 这类静默错误比崩溃更难查。</p>
+ * 向量编解码与相似度计算测试。零向量、维度不一致这些「算不出相似度」的情形必须返回 0，
+ * 而 {@code NaN} 参与排序不报错、只让结果顺序无从解释，这类静默错误比崩溃更难查。
  */
 @DisplayName("向量编解码与相似度")
 class VectorCodecTest {

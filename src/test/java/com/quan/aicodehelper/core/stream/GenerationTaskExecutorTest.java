@@ -18,10 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 生成任务执行器测试。
- *
- * <p><b>它守的是这次改造的核心承诺</b>：生成不再依赖 HTTP 连接。因此断言只关心两件事 ——
- * 任务在无人订阅时照样跑完，以及任何结束路径都能把任务推进终态（不让任务永久卡在 RUNNING）。</p>
+ * 生成任务执行器测试：守无人订阅时生成仍跑完，以及任何结束路径都能推进终态。
  */
 @DisplayName("生成任务执行器")
 class GenerationTaskExecutorTest {
@@ -94,7 +91,6 @@ class GenerationTaskExecutorTest {
         void shouldNotBeCancelledWhenSubscribersLeave() {
             GenerationTask task = registry.startTask(APP_ID);
 
-            // 生成过程中有用户订阅，然后断开
             Sinks.Many<String> gate = Sinks.many().unicast().onBackpressureBuffer();
             Flux<String> slowStream = gate.asFlux();
             executor.start(task, slowStream);
@@ -102,7 +98,7 @@ class GenerationTaskExecutorTest {
             List<String> received = new CopyOnWriteArrayList<>();
             registry.subscribe(APP_ID, 0L).subscribe(e -> received.add(e.event()));
 
-            // 订阅者「离开」——这里用取消订阅模拟客户端断开
+            // 订阅者「离开」：这里用取消订阅模拟客户端断开
             registry.emit(APP_ID, "断线前的进度");
 
             // 继续推数据，生成侧不应感知到订阅者的存在
@@ -120,7 +116,6 @@ class GenerationTaskExecutorTest {
 
             Flux<String> stream = Flux.just("a", "b")
                     .doOnNext(chunk -> {
-                        // 模拟业务层在生成过程中推送进度
                         registry.emit(APP_ID, "已处理：" + chunk);
                     });
 
@@ -188,7 +183,6 @@ class GenerationTaskExecutorTest {
         @Test
         @DisplayName("任务超时未结束时应被强制收尾，避免永久占用该应用")
         void shouldFinishStuckTask() throws Exception {
-            // 保留期设成 0，构造「任务创建时间早于超时线」的场景
             SseProperties properties = new SseProperties();
             properties.setGenerationTimeoutMinutes(1);
             properties.init();
@@ -228,7 +222,6 @@ class GenerationTaskExecutorTest {
             executor.start(first, Flux.<String>never());
             awaitUntil(() -> true, 100);
 
-            // 手动把第一个任务结束掉，再启动第二个
             registry.finishTask(APP_ID, "人工结束");
             GenerationTask second = registry.startTask(APP_ID);
             assertThat(second).isNotNull();

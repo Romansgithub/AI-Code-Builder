@@ -13,12 +13,8 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 项目上下文渲染测试。
- *
- * <p>这段文本最终会进 system message，所以两件事必须守住：
- * 渲染出来的东西得让模型能定位到真实文件（路径 + 行号 + 语言标记），
- * 以及总长度必须受控 —— prompt 预算被检索内容吃干净，
- * 比没有检索增强还糟。</p>
+ * 项目上下文渲染测试。这段文本会进 system message：渲染结果得让模型定位到真实文件
+ * （路径 + 行号 + 语言标记），总长度必须受控，prompt 预算被检索内容吃干净比没有检索还糟。
  */
 @DisplayName("项目上下文渲染")
 class ProjectContextBuilderTest {
@@ -135,8 +131,7 @@ class ProjectContextBuilderTest {
             String context = builder.build(CodeGenTypeEnum.VUE_PROJECT,
                     List.of(slice("a.vue", 1, 1, "x")));
 
-            // 只断言「丢弃提示」这句本身：页脚里另有「未列出文件」的说法，
-            // 用短词断言会误命中它
+            // 页脚里另有「未列出文件」的说法，用短词断言会误命中它
             assertThat(context).doesNotContain("因上下文长度限制未列出");
         }
     }

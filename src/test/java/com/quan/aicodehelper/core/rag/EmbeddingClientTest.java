@@ -17,17 +17,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 /**
- * embedding 客户端配置体检测试。
- *
- * <p><b>这里守的是一个很隐蔽的坑</b>：Spring 绑定 {@code @ConfigurationProperties}
- * 时占位符解析器带 {@code ignoreUnresolvablePlaceholders=true}，环境变量缺失时
- * {@code ${LLM_BASE_URL}} 既不报错也不变空，而是原样保留成字面量字符串。
- * 于是配置「读起来是齐的」，{@code available()} 却会返回 true，
- * 之后每次检索都往一个叫 {@code ${LLM_BASE_URL}} 的地址发请求 ——
- * 失败信息语焉不详，而表现只是「检索效果不如预期」。</p>
- *
- * <p>所以这里最关键的一条断言不是「报出了错」，而是
- * <b>「占位符必须被判定为不可用」</b>。</p>
+ * embedding 客户端配置体检测试。Spring 绑定 {@code @ConfigurationProperties} 时占位符解析器带
+ * {@code ignoreUnresolvablePlaceholders=true}，环境变量缺失时 {@code ${LLM_BASE_URL}} 会原样保留成
+ * 字面量，{@code available()} 因此误报 true，关键断言是它必须判为不可用。
  */
 @DisplayName("embedding 客户端")
 class EmbeddingClientTest {
@@ -43,7 +35,7 @@ class EmbeddingClientTest {
         budgetGuard = mock(LlmCallGuard.class);
         client = new EmbeddingClient();
         ReflectionTestUtils.setField(client, "ragProperties", properties);
-        // 探针也要过预算闸门，不注入就会空指针 —— 这条依赖关系本身也是被测内容
+        // 探针也要过预算闸门，不注入会空指针；这条依赖关系本身也是被测内容
         ReflectionTestUtils.setField(client, "llmCallGuard", budgetGuard);
     }
 
@@ -160,19 +152,16 @@ class EmbeddingClientTest {
         @DisplayName("探针要记账，且被闸门拒绝时必须自成一类")
         void budgetRejectionIsItsOwnKind() {
             configure("https://dashscope.aliyuncs.com/compatible-mode/v1", "sk-whatever");
-            // 让闸门拒绝，而不是放行：放行的话这条用例会真的去连服务商，
-            // 测试就变成依赖网络了。拒绝一样能验完「记了账 + 分对了类」。
+            // 让闸门拒绝而不是放行：放行会真的去连服务商，测试就依赖网络了
             doThrow(new BusinessException(ErrorCode.OPERATION_ERROR, "AI 调用次数已达上限（20 次）"))
                     .when(budgetGuard).acquire(anyString());
 
             EmbeddingClient.Probe probe = client.probe();
 
-            // 断言一：探针确实走了账本。自检发的也是一次真实 embedding 请求，
-            // 早先把它排除在外，理由是「量很小」—— 可这条理由对任何一次调用都成立。
+            // 自检发的也是一次真实 embedding 请求，同样要走账本
             verify(budgetGuard).acquire("RAG 自检");
-            // 断言二：被拒绝要单独成一类。这三类失败的下一步动作完全不同：
-            // 配置问题去改配置、调用失败去查网络、被拒绝去调额度或关掉自检。
-            // 混在一起，就会把额度问题误报成 key 无效。
+            // 被拒绝要单独成一类：配置问题改配置、调用失败查网络、被拒绝调额度，
+            // 混在一起会把额度问题误报成 key 无效
             assertThat(probe.kind())
                     .as("配置是对的、请求也没发出去，归进另外两类都会把人引向错误的排查方向")
                     .isEqualTo(EmbeddingClient.Probe.Kind.BUDGET_BLOCKED);

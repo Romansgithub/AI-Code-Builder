@@ -12,11 +12,9 @@ import AppCard from '@/components/AppCard.vue'
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
 
-// 用户提示词
 const userPrompt = ref('')
 const creating = ref(false)
 
-// 模板快捷入口
 const templates = [
   {
     label: '个人博客',
@@ -40,7 +38,6 @@ const templates = [
   },
 ]
 
-// 我的应用数据
 const myApps = ref<API.AppVO[]>([])
 const myAppsPage = reactive({
   current: 1,
@@ -48,7 +45,6 @@ const myAppsPage = reactive({
   total: 0,
 })
 
-// 精选应用数据
 const featuredApps = ref<API.AppVO[]>([])
 const featuredAppsPage = reactive({
   current: 1,
@@ -56,12 +52,10 @@ const featuredAppsPage = reactive({
   total: 0,
 })
 
-// 设置提示词
 const setPrompt = (prompt: string) => {
   userPrompt.value = prompt
 }
 
-// 创建应用
 const createApp = async () => {
   if (!userPrompt.value.trim()) {
     message.warning('请输入应用描述')
@@ -95,7 +89,6 @@ const createApp = async () => {
   }
 }
 
-// 加载我的应用
 const loadMyApps = async () => {
   if (!loginUserStore.loginUser.id) {
     return
@@ -118,7 +111,6 @@ const loadMyApps = async () => {
   }
 }
 
-// 加载精选应用
 const loadFeaturedApps = async () => {
   try {
     const res = await listGoodAppVoByPage({
@@ -137,14 +129,12 @@ const loadFeaturedApps = async () => {
   }
 }
 
-// 查看对话
 const viewChat = (appId: string | number | undefined) => {
   if (appId) {
     router.push(`/app/chat/${appId}?view=1`)
   }
 }
 
-// 查看作品
 const viewWork = (app: API.AppVO) => {
   if (app.deployKey) {
     const url = getDeployUrl(app.deployKey)
@@ -152,7 +142,6 @@ const viewWork = (app: API.AppVO) => {
   }
 }
 
-// 页面加载时获取数据
 onMounted(() => {
   loadMyApps()
   loadFeaturedApps()
@@ -161,7 +150,6 @@ onMounted(() => {
 
 <template>
   <div id="homePage">
-    <!-- Hero 与创建入口 -->
     <section id="create" class="hero">
       <div class="container hero-inner">
         <span class="hero-badge">
@@ -215,7 +203,6 @@ onMounted(() => {
     </section>
 
     <div class="container home-body">
-      <!-- 我的作品 -->
       <section id="my-apps" class="section">
         <div class="section-header">
           <div>
@@ -247,7 +234,6 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- 精选案例 -->
       <section id="featured" class="section">
         <div class="section-header">
           <div>
@@ -296,7 +282,6 @@ onMounted(() => {
     linear-gradient(180deg, #ffffff 0%, var(--color-bg-page) 42%);
 }
 
-/* Hero */
 .hero {
   position: relative;
   padding: 72px 0 48px;
@@ -338,7 +323,6 @@ onMounted(() => {
   color: var(--color-text-tertiary);
 }
 
-/* 提示词输入框 */
 .composer {
   width: 100%;
   max-width: 760px;
@@ -394,7 +378,6 @@ onMounted(() => {
   font-weight: 600;
 }
 
-/* 模板 */
 .templates {
   display: flex;
   flex-wrap: wrap;
@@ -427,7 +410,6 @@ onMounted(() => {
   background: var(--color-primary-bg);
 }
 
-/* 主体 */
 .home-body {
   padding-top: 56px;
   padding-bottom: 8px;

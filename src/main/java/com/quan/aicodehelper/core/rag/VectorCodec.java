@@ -4,26 +4,14 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * 向量的二进制编解码与相似度计算。
- *
- * <p><b>为什么不把向量存成 JSON 数组或逗号分隔字符串</b>：
- * 1024 维的 float 用 JSON 大约 12 KB，用 float32 紧凑存储只要 4 KB，
- * 而且不用解析 —— 拉出来就能直接参与计算。库里存的是派生数据，
- * 可读性换不来什么，体积与解析开销却是每次检索都要付的。</p>
- *
- * <p><b>为什么把相似度计算收在这里而不是用现成工具</b>：
- * 余弦的零向量分支很容易被漏掉 —— 分母为 0 时结果是 {@code NaN}，
- * 而 {@code NaN} 参与排序不会抛异常，只会让排序结果变成一堆无从解释的顺序。
- * 这类错误静默且难查，所以集中一处处理并单独测。</p>
+ * 向量的二进制编解码与相似度计算。float32 紧凑存储代替 JSON；余弦的零向量分支集中处理，避免 NaN 污染排序。
  */
 public final class VectorCodec {
 
     private VectorCodec() {
     }
 
-    /**
-     * 向量 → 字节。采用小端序，与主流 x86 原生字节序一致。
-     */
+    /** 向量 → 字节，小端序存储。 */
     public static byte[] encode(float[] vector) {
         if (vector == null) {
             return null;
@@ -36,10 +24,7 @@ public final class VectorCodec {
         return buffer.array();
     }
 
-    /**
-     * 字节 → 向量。长度不是 4 的整数倍时抛异常 —— 说明存进去的东西本身坏了，
-     * 此时应当立刻暴露，而不是解出一个长度对不上的向量继续算。
-     */
+    /** 字节 → 向量；长度非 4 的整数倍视为数据损坏，直接抛异常。 */
     public static float[] decode(byte[] bytes) {
         if (bytes == null || bytes.length == 0) {
             return null;
@@ -55,13 +40,7 @@ public final class VectorCodec {
         return vector;
     }
 
-    /**
-     * 余弦相似度，取值范围 [-1, 1]。
-     *
-     * <p>任一向量为空、维度不一致或存在零向量时返回 0（而非抛异常）：
-     * 检索链路上「算不出相似度」与「相似度很低」的处理方式完全相同 ——
-     * 都当作不相关。为零向量而中断整次检索，代价远大于收益。</p>
-     */
+    /** 余弦相似度，取值 [-1, 1]。空向量、维度不一致或零向量返回 0：检索中「算不出」等同「不相关」，不值得中断整次检索。 */
     public static double cosine(float[] a, float[] b) {
         if (a == null || b == null || a.length == 0 || a.length != b.length) {
             return 0D;
@@ -80,13 +59,7 @@ public final class VectorCodec {
         return dot / (Math.sqrt(normA) * Math.sqrt(normB));
     }
 
-    /**
-     * 把余弦值映射到 [0, 1]，便于与同样落在 [0, 1] 的关键词命中率线性加权。
-     *
-     * <p>不映射也能用，但那样得分为负数时会让「向量部分为负 + 关键词部分为正」
-     * 出现抵消，最终排序不再可解释。统一到同一量纲后，
-     * 两个权重才真正表示「各占多少话语权」。</p>
-     */
+    /** 把余弦映射到 [0,1]，与关键词命中率统一量纲后才能线性加权。 */
     public static double toUnitRange(double cosine) {
         if (Double.isNaN(cosine)) {
             return 0D;

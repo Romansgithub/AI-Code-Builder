@@ -8,7 +8,6 @@
     </div>
 
     <div class="profile-container">
-      <!-- 账号信息 -->
       <a-card title="账号信息" :loading="loading">
         <a-descriptions :column="2" bordered>
           <a-descriptions-item label="账号">
@@ -27,7 +26,6 @@
         </a-descriptions>
       </a-card>
 
-      <!-- 编辑资料 -->
       <a-card title="编辑资料" style="margin-top: 24px">
         <a-form :model="formData" :rules="rules" layout="vertical" @finish="handleSubmit">
           <a-form-item label="昵称" name="userName">

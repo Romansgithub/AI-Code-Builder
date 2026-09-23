@@ -8,16 +8,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 存储与部署配置测试。
- *
- * <p><b>回归背景</b>：原先 {@code AppConstant.CODE_DEPLOY_HOST} 硬编码为
- * {@code "http://localhost"}，拼接出的部署地址是 {@code http://localhost/AbC123/} ——
- * 既漏了端口 8080，也漏了 context-path {@code /api}，更漏了静态资源前缀 {@code /static}，
- * 导致截图服务（Chrome 访问该 URL）必然超时/取到错误页面。
- * 同时部署地址若不以 {@code "/"} 结尾，预览页的相对路径 {@code "./assets/xxx"} 会解析错位，
- * Vue 构建产物的 JS/CSS 全部 404。</p>
- *
- * <p>本测试锁死这两个行为。</p>
+ * 存储与部署配置测试：锁死部署地址尾斜杠补全与回填 AppConstant 两个行为。
  */
 @DisplayName("存储与部署配置")
 class StoragePropertiesTest {

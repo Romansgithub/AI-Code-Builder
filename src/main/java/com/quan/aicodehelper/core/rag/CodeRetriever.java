@@ -17,35 +17,14 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 代码检索器：从某个应用的已有工程里，找出与本次需求最相关的代码片段。
- *
- * <p><b>为什么在应用内算而不是交给向量数据库</b>：候选集是「单个应用的全部片段」，
- * 量级在数百。把向量拉到内存里做暴力余弦，耗时在毫秒级，
- * 却省掉了一整套向量库的部署、运维与一致性维护。数据量涨到十万级以上时
- * 这个取舍才会翻转 —— 那已经是「平台有几千个应用同时被检索」的规模了。</p>
- *
- * <p><b>三种降级，都不影响生成</b>：</p>
- * <ul>
- *   <li>开关关闭 / 应用无索引 → 返回空，上下文为空，行为与改造前一致；</li>
- *   <li>查询向量算不出来（额度耗尽、服务抖动）→ <b>退化为纯关键词检索</b>。
- *       关键词那一路完全在本地计算，不依赖任何外部服务，
- *       所以「向量不可用」时仍然能捞出「需求里点名了文件名」这类高价值片段；</li>
- *   <li>片段没有向量（上次向量化失败的遗留）→ 该片段仍参与关键词打分。</li>
- * </ul>
- * <p>这三条的共同点：宁可少召回，也不要让检索失败升级成生成失败。</p>
+ * 代码检索器：从某应用的已有工程里找出与需求最相关的片段。在应用内做暴力余弦（候选数百、毫秒级，
+ * 省掉向量库运维）；三类降级都不影响生成，开关关或无索引返空、向量不可用退化为关键词、片段无向量仍参与关键词打分。
  */
 @Slf4j
 @Service
 public class CodeRetriever {
 
-    /**
-     * 「需求里直接点名了这个文件」的额外加分。
-     *
-     * <p>加在归一化得分（满分为 1）之上，因此点名文件的片段一定排在
-     * 纯语义相似片段之前 —— 这是刻意的：用户说了
-     * 「改一下 Login.vue 的标题」，那个文件必须进上下文，
-     * 无论向量算出来的相似度是多少。</p>
-     */
+    /** 「需求点名了文件」的额外加分（加在归一化满分 1 之上）：用户点名某文件时它必须进上下文，不论语义相似度高低。 */
     private static final double FILE_MENTION_BONUS = 0.5D;
 
     @Resource
@@ -60,14 +39,7 @@ public class CodeRetriever {
     @Resource
     private CodeIndexService codeIndexService;
 
-    /**
-     * 检索与需求相关的代码片段。永不抛出。
-     *
-     * @param appId 应用 id
-     * @param type  代码生成类型
-     * @param query 用户本次需求
-     * @return 按相关度降序的片段；任何异常或无结果时返回空列表
-     */
+    /** 检索与需求相关的片段，按相关度降序；任何异常或无结果返回空列表，永不抛出。 */
     public List<RetrievedSlice> retrieve(long appId, CodeGenTypeEnum type, String query) {
         if (!ragProperties.isEnabled() || appId <= 0 || type == null
                 || query == null || query.isBlank()) {
@@ -84,9 +56,7 @@ public class CodeRetriever {
     private List<RetrievedSlice> doRetrieve(long appId, CodeGenTypeEnum type, String query) {
         List<CodeChunk> chunks = loadChunks(appId, type);
         if (chunks.isEmpty()) {
-            // 兜底：首次迭代时异步预热可能还没跑完（甚至因为额度耗尽失败了）。
-            // 这里同步补一次 —— 它会自愈上述两种情况，而费用只发生在
-            // 「确实还没有索引」的时候，常规迭代路径上不会走到这一支。
+            // 兜底：异步预热可能未跑完或失败，同步补一次可自愈；费用只发生在确实无索引时
             codeIndexService.ensureIndexed(appId, type);
             chunks = loadChunks(appId, type);
         }
@@ -111,10 +81,7 @@ public class CodeRetriever {
             double vectorScore = vectorSimilarity(queryVector, chunk);
             double keywordScore = QueryTerms.matchScore(terms, chunk.getSymbols(),
                     chunk.getFilePath(), chunk.getContent());
-            // 横切文件（全局样式 / 框架入口）的向量相似度判别力低 ——
-            // 它们与任何需求都「有点关系」。折扣只削向量项：关键词分是字面命中的
-            // 硬信号，点名加成更是明确指令，两者都与「这个文件是否泛化」无关。
-            // 默认系数为 1.0，即不启用。
+            // 横切文件（全局样式/框架入口）向量判别力低，折扣只削向量项；关键词命中与点名加成是硬信号，不受泛化影响。默认 1.0 不启用。
             double penalty = QueryTerms.genericFilePenalty(terms, chunk.getFilePath(),
                     ragProperties.getGenericFilePenalty());
             double score = vectorWeight * vectorScore * penalty + keywordWeight * keywordScore;
@@ -140,9 +107,7 @@ public class CodeRetriever {
         return picked;
     }
 
-    /**
-     * 查询向量。取不到时返回 null 而不是抛异常 —— 调用方据此退化为纯关键词检索。
-     */
+    /** 查询向量；取不到返回 null，调用方据此退化为纯关键词检索，不抛异常。 */
     private float[] embedQueryQuietly(String query) {
         if (!embeddingClient.available()) {
             return null;
@@ -163,19 +128,13 @@ public class CodeRetriever {
         try {
             chunkVector = VectorCodec.decode(chunk.getEmbedding());
         } catch (Exception e) {
-            // 单条向量损坏不应让整次检索失败，只把这一个片段的向量分记 0
+            // 单条向量损坏不应让整次检索失败，只记 0
             return 0D;
         }
         return VectorCodec.toUnitRange(VectorCodec.cosine(queryVector, chunkVector));
     }
 
-    /**
-     * 按「总数上限」与「单文件上限」挑出最终片段。
-     *
-     * <p>单文件上限的作用：一个「薄」文件（比如被反复引用的工具模块）
-     * 可能凭高相似度贡献很多片段，把其它真正要改的文件全挤出去。
-     * 限流之后，Top-K 里必然覆盖多个文件 —— 而用户的需求几乎总是跨文件的。</p>
-     */
+    /** 按总数上限与单文件上限挑出最终片段；单文件上限防止被反复引用的「薄」文件挤掉其它真正要改的文件。 */
     private List<RetrievedSlice> applyQuota(List<RetrievedSlice> sorted) {
         int topK = ragProperties.getTopK();
         int perFileLimit = Math.max(1, ragProperties.getMaxChunksPerFile());
@@ -196,8 +155,7 @@ public class CodeRetriever {
     }
 
     private List<CodeChunk> loadChunks(long appId, CodeGenTypeEnum type) {
-        // 同时按 codeGenType 过滤：应用的生成类型若被改过，
-        // 旧类型留下的片段会残留在表里，检索到它们等于把过时的代码喂给模型
+        // 同时按 codeGenType 过滤：类型被改过会残留旧片段，检索到等于把过时代码喂给模型
         return codeChunkMapper.selectListByQuery(QueryWrapper.create()
                 .eq("appId", appId)
                 .eq("codeGenType", type.getValue()));

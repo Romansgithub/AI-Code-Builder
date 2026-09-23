@@ -7,7 +7,6 @@ import { computed } from 'vue'
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js'
 
-// 引入代码高亮样式
 import 'highlight.js/styles/github.css'
 
 interface Props {
@@ -16,7 +15,6 @@ interface Props {
 
 const props = defineProps<Props>()
 
-// 配置 markdown-it 实例
 const md: MarkdownIt = new MarkdownIt({
   html: true,
   linkify: true,
@@ -30,7 +28,6 @@ const md: MarkdownIt = new MarkdownIt({
           '</code></pre>'
         )
       } catch {
-        // 忽略错误，使用默认处理
       }
     }
 
@@ -38,7 +35,6 @@ const md: MarkdownIt = new MarkdownIt({
   },
 })
 
-// 计算渲染后的 Markdown
 const renderedMarkdown = computed(() => {
   return md.render(props.content)
 })
@@ -170,7 +166,6 @@ const renderedMarkdown = computed(() => {
   margin: 1.5em 0;
 }
 
-/* 代码高亮样式优化 */
 .markdown-content :deep(.hljs) {
   background-color: #f8f8f8 !important;
   border-radius: 6px;
@@ -179,7 +174,6 @@ const renderedMarkdown = computed(() => {
   line-height: 1.4;
 }
 
-/* 特定语言的代码块样式 */
 .markdown-content :deep(.hljs-keyword) {
   color: #d73a49;
   font-weight: 600;

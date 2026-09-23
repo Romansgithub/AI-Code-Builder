@@ -34,9 +34,6 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 
-/**
- * 聊天记忆工厂类
- */
 @Slf4j
 @Component
 public class AiCodeGeneratorServiceFactory {
@@ -60,20 +57,13 @@ public class AiCodeGeneratorServiceFactory {
     @Resource
     private GenerationProgressRegistry generationProgressRegistry;
 
-    /**
-     * 创建 AI 代码生成服务实例
-     * @param appId
-     * @param codeGenType
-     * @return
-     */
     private AiCodeGeneratorService createAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenType) {
-        // 走缓存取记忆而不是每次新建：自愈服务要用同一个记忆对象，
-        // 两个实例各自 createChatMemory 会各持一份内存副本互相覆盖（见 resolveChatMemory）
+        // 用缓存取记忆而非每次新建：生成与自愈必须共用同一份，各自 createChatMemory 会各持副本互相覆盖。
         MessageWindowChatMemory chatMemory =  resolveChatMemory(appId);
         return switch (codeGenType) {
             case VUE_PROJECT -> {
                 StreamingChatModel reasoningStreamingChatModel = SpringUtil.getBean("reasoningStreamingChatModelPrototype", StreamingChatModel.class);
-                // 包一层降级：模型服务抖动时自动切备用模型，不必让整次生成白费
+                // 包一层降级：模型抖动时自动切备用模型，不让整次生成白费
                 StreamingChatModel withFallback = fallbackModelProvider.wrapWithFallback(
                         reasoningStreamingChatModel,
                         reasoningStreamingChatModelConfig.getModelName(),
@@ -122,16 +112,10 @@ public class AiCodeGeneratorServiceFactory {
 
     /**
      * 创建构建自愈专用的 AI 服务实例。
-     *
-     * <p><b>与生成服务最关键的一处差异：不挂 {@code PromptSafetyInputGuardrail}。</b>
-     * 那个护栏的作用对象是「用户在聊天框里敲的话」，而自愈的 user 消息是程序
-     * 拼装的构建报错。挂上去的后果不是「多一层保护」：报错 573 字 + 模板 668 字
-     * 超过 1000 字上限，请求直接被拒，异常又被吞成「这轮没修好」，
-     * 于是报告上出现「自愈 2 轮」而模型一次都没被调用过。
-     * 完整事故记录见 {@link AiCodeHealingService} 的类注释。</p>
-     *
-     * <p>其余配置（模型、降级包装、工具集、幻觉工具名兜底、会话记忆）与生成服务
-     * 保持一致 —— 自愈要做的事就是「像刚才那样改代码」，能力上不该有差别。</p>
+     * <p>与生成服务最关键的一处差异：不挂 {@code PromptSafetyInputGuardrail}。它面向聊天框输入，
+     * 而自愈的 user 消息是程序拼装的构建报错，长度会超过 1000 字上限被直接拒绝，
+     * 异常又被吞成「这轮没修好」，报告显示自愈 N 轮而模型一次都没被调用。详见 {@link AiCodeHealingService} 类注释。
+     * <p>其余配置与生成服务一致：自愈做的就是「像刚才那样改代码」，能力上不该有差别。
      */
     private AiCodeHealingService createAiCodeHealingService(long appId) {
         StreamingChatModel reasoningStreamingChatModel = SpringUtil.getBean("reasoningStreamingChatModelPrototype", StreamingChatModel.class);
@@ -155,21 +139,13 @@ public class AiCodeGeneratorServiceFactory {
                 .build();
     }
 
-    /**
-     * 获取构建自愈专用服务实例（带缓存）。
-     */
+    /** 获取构建自愈专用服务实例（带缓存）。 */
     public AiCodeHealingService getAiCodeHealingService(long appId) {
         String cacheKey = appId + "_" + HEALING_CACHE_SUFFIX;
         return healingServiceCache.get(cacheKey, key -> createAiCodeHealingService(appId));
     }
 
-    /**
-     * 降级发生时通知用户与日志。
-     *
-     * <p>为什么要把降级告诉用户：备用模型往往档位更低，输出质量可能与预期不同。
-     * 静默降级会让用户困惑于「为什么这次生成得不一样」，甚至误判为模型变笨了。
-     * 明说「已切换到备用模型」既是知情权，也是排查线索。</p>
-     */
+    /** 降级时通知用户与日志：备用模型输出可能不同，静默降级会让用户误判为模型变差。 */
     private void notifyFallback(long appId, FallbackStreamingChatModel.FallbackEvent event) {
         log.warn("应用 {} 触发模型降级：{} → {}（原因：{}）",
                 appId, event.fromModel(), event.toModel(), event.reason());
@@ -181,11 +157,7 @@ public class AiCodeGeneratorServiceFactory {
     }
 
 
-    /**
-     * 创建带 Redis 持久化的会话记忆，记忆为空（如过期）时从数据库聊天记录恢复
-     * @param memoryId
-     * @return
-     */
+    /** 创建带 Redis 持久化的会话记忆，记忆为空（如过期）时从数据库聊天记录恢复。 */
     public MessageWindowChatMemory createChatMemory(Object memoryId) {
         MessageWindowChatMemory chatMemory = MessageWindowChatMemory
                 .builder()
@@ -201,16 +173,11 @@ public class AiCodeGeneratorServiceFactory {
 
     /**
      * 取（或建）某个 appId 的会话记忆，生成与自愈共用同一份。
-     *
-     * <p>用缓存而不是每次新建，是因为记忆对象是有状态的：两个实例各持一份的话，
-     * 每次 {@code add} 都是整份写回 Redis，后写的一方会覆盖掉另一方刚追加的消息。</p>
+     * <p>记忆对象有状态：两个实例各持一份时每次 {@code add} 都是整份写回 Redis，后写的会覆盖对方刚追加的消息。</p>
      */
     private MessageWindowChatMemory resolveChatMemory(long appId) {
         return chatMemoryCache.get(appId, this::createChatMemory);
     }
-    /**
-     * 创建 AI 代码生成服务实例，并使用缓存进行管理
-     */
     private final Cache<String, AiCodeGeneratorService> serviceCache = Caffeine.newBuilder()
             .maximumSize(1000)
             .expireAfterWrite(Duration.ofMinutes(30))
@@ -221,16 +188,11 @@ public class AiCodeGeneratorServiceFactory {
             .build();
 
     /**
-     * 自愈服务缓存键后缀。
-     *
-     * <p>必须与生成服务分开缓存：两者是不同的返回类型、不同的护栏配置，
-     * 若共用同一个 key，Caffeine 会在第二次 get 时直接抛 ClassCastException。</p>
+     * 自愈服务缓存键后缀。必须与生成服务分开：两者返回类型不同，
+     * 共用同一个 key 时 Caffeine 会在第二次 get 时直接抛 ClassCastException。
      */
     private static final String HEALING_CACHE_SUFFIX = "HEALING";
 
-    /**
-     * 构建自愈服务缓存，与生成服务缓存同样的过期策略。
-     */
     private final Cache<String, AiCodeHealingService> healingServiceCache = Caffeine.newBuilder()
             .maximumSize(1000)
             .expireAfterWrite(Duration.ofMinutes(30))
@@ -241,16 +203,10 @@ public class AiCodeGeneratorServiceFactory {
             .build();
 
     /**
-     * 会话记忆缓存。
-     *
-     * <p><b>为什么需要单独缓存</b>：生成与自愈是两个不同的 {@code AiService} 实例，
-     * 但它们必须共享同一个 {@code appId} 的对话记忆 —— 自愈要能看到模型刚才写的文件。
-     * 若两边各自 {@code createChatMemory}，就会得到两个指向同一个 Redis key
-     * 的独立内存对象：各自从 Redis 载入一份、各自整份写回，
-     * 后写的一方会把对方期间追加的消息抹掉（写入是整份覆盖而非增量追加）。</p>
-     *
-     * <p>过期策略与两个服务缓存保持一致，避免出现「服务实例还在、
-     * 它持有的记忆对象已经过期」这种半新半旧的组合。</p>
+     * 会话记忆缓存。生成与自愈是两个不同的 {@code AiService} 实例，但必须共享同一个 appId 的
+     * 对话记忆（自愈要能看到模型刚写的文件）；各自 {@code createChatMemory} 会得到两个指向同一
+     * Redis key 的独立内存对象，各自整份写回，后写的会抹掉对方期间追加的消息。
+     * <p>过期策略与两个服务缓存保持一致，避免「服务实例还在、它持有的记忆对象已过期」的组合。
      */
     private final Cache<Long, MessageWindowChatMemory> chatMemoryCache = Caffeine.newBuilder()
             .maximumSize(1000)
@@ -258,24 +214,13 @@ public class AiCodeGeneratorServiceFactory {
             .expireAfterAccess(Duration.ofMinutes(10))
             .build();
 
-    /**
-     * 获取 AI 代码生成服务实例
-     * @param appId
-     * @param codeGenTypeEnum
-     * @return
-     */
+    /** 获取 AI 代码生成服务实例。 */
     public AiCodeGeneratorService getAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenTypeEnum)
     {
         String cacheKey = buildCacheKey(appId, codeGenTypeEnum);
         return serviceCache.get(cacheKey, key -> createAiCodeGeneratorService(appId, codeGenTypeEnum));
     }
 
-    /**
-     * 构建缓存键
-     * @param appId
-     * @param codeGenTypeEnum
-     * @return
-     */
     private String buildCacheKey(long appId, CodeGenTypeEnum codeGenTypeEnum)
     {
         return appId + "_" + codeGenTypeEnum.getValue();

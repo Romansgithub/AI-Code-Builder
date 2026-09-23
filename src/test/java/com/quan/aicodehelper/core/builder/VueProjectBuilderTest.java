@@ -16,12 +16,7 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Vue 项目构建器测试。
- *
- * <p>只覆盖<b>不触发 npm 执行</b>的路径：目录校验与失败类型判定。
- * 真正跑 npm 的路径依赖网络与 Node 环境，属集成测试范畴，不在此处执行。</p>
- */
+/** Vue 项目构建器测试：只覆盖不触发 npm 执行的路径，即目录校验与失败类型判定 */
 @DisplayName("Vue 项目构建器")
 class VueProjectBuilderTest {
 
@@ -61,7 +56,7 @@ class VueProjectBuilderTest {
 
             assertThat(result.isSuccess()).isFalse();
             assertThat(result.getFailureType()).isEqualTo(BuildFailureTypeEnum.INVALID_PROJECT);
-            // 自愈不应被触发 —— 重试改变不了目录不存在的事实
+            // 自愈不应被触发，重试改变不了目录不存在的事实
             assertThat(result.isHealable()).isFalse();
         }
 
@@ -187,8 +182,8 @@ class VueProjectBuilderTest {
     }
 
     /**
-     * shouldInstallDependencies 是私有方法，通过反射调用。
-     * 直接测它是为了把「跳过 npm install」这条优化锁死 —— 它直接决定自愈的响应速度。
+     * shouldInstallDependencies 是私有方法，通过反射调用；直接测它为了把「跳过 npm install」
+     * 这条优化锁死，它直接决定自愈的响应速度。
      */
     private boolean invokeShouldInstall(java.io.File dir) {
         Boolean result = ReflectionTestUtils.invokeMethod(builder, "shouldInstallDependencies", dir);

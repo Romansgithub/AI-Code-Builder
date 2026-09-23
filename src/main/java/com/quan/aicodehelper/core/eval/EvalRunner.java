@@ -23,33 +23,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 评测跑批执行器。
+ * 评测跑批执行器：跑一遍评测集，产出可跨批次比较的指标。
  *
- * <p><b>它解决什么问题</b>：单个功能好不好用可以靠感觉，但「改了自愈提示词之后效果变好了吗」
- * 这种问题只能靠固定用例反复跑、看数字变化来回答。这个类就是把评测集跑一遍，
- * 产出可对比的指标。</p>
- *
- * <p><b>为什么不复用 chatToGenCode</b>：那条路径要求先有 App 记录、要过权限校验，
- * 而且生成类型由 AI 路由决定 —— 路由不稳会让同一 prompt 落在不同类型上，
- * 指标失去可比性。所以这里直接驱动 {@link AiCodeGeneratorFacade}，
- * 类型由评测集写死。但构建与自愈仍然走生产同一条
- * {@link BuildSelfHealingService}，保证测的是真实链路而不是简化版。</p>
- *
- * <p><b>隔离性</b>：跑批产物写在独立的子目录下，不与用户真实产物混在一起，
- * 避免评测应用出现在用户的应用列表里。</p>
- *
- * <p><b>产物路径契约（重要，别再改回去）</b>：生成侧落盘目录由
- * {@code FileWriteTool} / {@code CodeFileSaverTemplate} 按
- * {@code {codeType}_{appId}} 拼出，这个 appId 是生成侧自己收到的那个。
- * 评测侧只在跑批期间把 {@link AppConstant.Storage} 的产物根指向
- * {@code code-output-dir/eval-run}，<b>然后完全复用同一套命名规则</b>去读产物。</p>
- *
- * <p>历史上这里踩过一个坑：评测侧曾用「用例 id」自造了第三套目录名
- * （{@code eval-run/vue_project_vue-todo}），而生成侧实际落在
- * {@code eval-run/vue_project_-1789915935607} —— 两条路径永远对不上，
- * 8 条用例全被判失败，日志里却明明白白写着构建成功。
- * <b>凡是「写盘的一方」和「读盘的一方」分别算路径，就一定会漂移。</b>
- * 现在只有一处算路径（生产那套），评测侧只换根目录。</p>
+ * <p>不复用 chatToGenCode：其生成类型由 AI 路由决定，路由不稳会让指标失去可比性，故这里类型写死；
+ * 但构建与自愈仍走生产的 {@link BuildSelfHealingService}。产物路径也只在生产侧算一次
+ * （{@code {codeType}_{appId}}），评测侧仅换产物根，否则写盘方与读盘方各自算路径必然漂移。</p>
  */
 @Slf4j
 @Service
@@ -71,11 +49,8 @@ public class EvalRunner {
     private CodeGenEvalRecorder codeGenEvalRecorder;
 
     /**
-     * 跑一轮完整评测。
-     *
-     * <p>同步执行、按用例顺序串行 —— 串行虽然慢，但并发跑会让 npm install
-     * 互相抢 IO，耗时数据失真，且日志混在一起难以定位问题。
-     * 评测关心的是数据可信，不是跑得快。</p>
+     * 跑一轮完整评测。用例串行执行：并发会让 npm install 互相抢 IO，
+     * 耗时数据失真且日志混杂，评测关心数据可信而非速度。
      *
      * @return 跑批结果
      */
@@ -84,18 +59,11 @@ public class EvalRunner {
     }
 
     /**
-     * 跑一轮评测，可只跑其中一条用例。
+     * 跑一轮评测，可只跑其中一条用例：跑批是真实调 AI + 真实 npm 构建，整集验证代价高，
+     * 而改动往往只影响一条链路，这个开关把验证成本按改动范围切分。
      *
-     * <p><b>为什么需要「只跑一条」</b>：跑批是真实调用 AI + 真实 npm 构建，
-     * 每次验证改动的代价是整集用例的 token 与十几分钟等待。而实际改动往往
-     * 只影响一条链路 —— 例如修了自愈的调用方式，关心的就只有那条注入用例。
-     * 没有这个入口时，「验证一处修复」必须付整集的成本，于是要么不敢验证，
-     * 要么付了成本才发现改错。这个开关把验证成本按改动范围切分。</p>
-     *
-     * <p>注意它只影响「跑哪些用例」，不改动任何指标口径：单跑一条时，
-     * 通过率的分母自然变成 1（非注入用例）或 0（注入用例），
-     * 因此<b>单条跑批的数字不能与整集跑批横向比较</b>，
-     * 它只用于回答「这条链路现在通不通」。</p>
+     * <p>它只影响跑哪些用例，不改指标口径：单跑时通过率分母变成 1（非注入）或 0（注入），
+     * 因此单条数字不能与整集横向比较。</p>
      *
      * @param caseIdFilter 只跑这条用例；为空/空白表示跑全量
      * @return 跑批结果
@@ -122,12 +90,8 @@ public class EvalRunner {
                 StrUtil.isBlank(caseIdFilter) ? "" : "（已按 caseId 限定）");
 
         List<EvalRunResult.CaseResult> caseResults = new ArrayList<>();
-        // 整轮跑批期间把产物根切到 eval-run 子目录，跑完必须还原：
-        // AppConstant 是全局静态状态，不还原会让评测产物污染之后所有真实用户的生成。
-        //
-        // 关键：evalRunRoot 只在此处算一次并向下传递，绝不能在跑批过程中再调
-        // evalOutputRoot() —— 那时 AppConstant 已经是 eval-run 了，再拼一次会得到
-        // eval-run/eval-run/...（这个坑第一次实现时就踩到了，契约测试当场抓出）。
+        // 跑批期间把产物根切到 eval-run，跑完必须还原（AppConstant 是全局静态状态）。
+        // evalRunRoot 只在此算一次：期间 AppConstant 已是 eval-run，再拼会得到 eval-run/eval-run/...
         String originalOutputRoot = AppConstant.getCodeOutputRootDir();
         String evalRunRoot = originalOutputRoot + File.separator + evalProperties.getOutputSubDir();
         AppConstant.Storage.apply(evalRunRoot, AppConstant.getCodeDeployRootDir(),
@@ -158,10 +122,8 @@ public class EvalRunner {
     /**
      * 按 caseId 过滤出本轮要跑的用例。
      *
-     * <p><b>找不到就必须报错，不能静默跑 0 条</b>：如果拼错一个 caseId 就
-     * 「跑完 0 条并返回成功」，调用方会得到一个空报告 —— 它看起来不像错误
-     * （没有异常、没有失败用例），于是「验证过了」的错觉比没验证更危险。
-     * 报错时把可用 caseId 一并列出，是让用户一眼看出拼错在哪，而不是去翻评测集文件。</p>
+     * <p>找不到必须报错，不能静默跑 0 条：空报告看起来不像错误（无异常、无失败用例），
+     * 会给出「验证过了」的错觉。报错时一并列出可用 caseId。</p>
      */
     private List<EvalCase> selectCases(EvalSet evalSet, String caseIdFilter) {
         List<EvalCase> allCases = evalSet.getCases();
@@ -183,32 +145,23 @@ public class EvalRunner {
         return matched;
     }
 
-    /**
-     * 执行单条用例。
-     *
-     * <p>任何异常都在这里被收成「失败结果」而不是向上抛 —— 一条用例挂掉
-     * 不该让整轮跑批作废，否则一个偶发的接口超时就得从头再跑二十分钟。</p>
-     */
+    /** 执行单条用例，异常在此收成「失败结果」而不上抛：一条用例挂掉不该让整轮跑批作废。 */
     private EvalRunResult.CaseResult runSingleCase(EvalCase evalCase, String batchId,
                                                    String evalRunRoot) {
         EvalRunResult.CaseResult cr = new EvalRunResult.CaseResult();
         cr.setCaseId(evalCase.getId());
         cr.setDescription(evalCase.getDescription());
         cr.setCodeGenType(evalCase.getCodeGenType().getValue());
-        // 标出来让汇总口径能排除它：注入用例首轮必失败是我们的设计，
-        // 不该出现在「一次通过率」里（口径实现在 EvalRunResult.summarize）。
+        // 标记注入用例供汇总口径排除：它首轮必失败是设计使然，不该进一次通过率。
         cr.setFaultInjected(evalCase.getFaultInjection() != null);
 
         long startedAt = System.currentTimeMillis();
-        // 负 appId 作为评测专用会话 id：与真实应用的 id 空间天然隔开，
-        // 两次跑批之间也不会共用对话记忆（每批重新起号）
+        // 负数 appId 作为评测会话 id：与真实应用 id 空间天然隔开，两次跑批也不共用对话记忆。
         Long evalAppId = nextEvalAppId();
-        // 产物目录按生成侧的命名规则算出，并在此刻清空（只清一次，且在生成之前）
+        // 产物目录按生成侧命名规则算出，在生成之前清空一次
         String outputDir = prepareCaseOutputDir(evalCase, evalAppId, evalRunRoot);
 
-        // 每条用例跑在独立虚拟线程上，主线程限时等待。
-        // 目的不是提速，而是隔离：单条用例卡死（比如模型反复自我修复不收敛）
-        // 不能拖垮整轮跑批 —— 否则一次跑批就得从头再来。
+        // 每条用例跑独立虚拟线程、主线程限时等待。目的是隔离而非提速：单条卡死不能拖垮整轮跑批。
         java.util.concurrent.atomic.AtomicReference<RuntimeException> asyncError =
                 new java.util.concurrent.atomic.AtomicReference<>();
         Thread worker = Thread.ofVirtual()
@@ -233,14 +186,14 @@ public class EvalRunner {
         }
 
         if (cr.getGenerateCostMs() == 0L && cr.getBuildCostMs() == 0L) {
-            // 一刀未动说明线程还没跑到计时点就卡住了，或已超时
+            // 无任何耗时数据，说明线程还没跑到计时点就卡住或已超时
             if (worker.isAlive()) {
                 cr.setTimedOut(true);
                 worker.interrupt();
                 log.warn("用例 {} 超过 {} 秒仍未完成，按超时记失败", evalCase.getId(), timeoutSeconds);
             }
         } else if (worker.isAlive()) {
-            // 已有部分耗时数据但仍在跑，同样按超时处理
+            // 已有部分耗时数据但线程仍在跑，同样按超时处理
             cr.setTimedOut(true);
             worker.interrupt();
             log.warn("用例 {} 超过 {} 秒仍未结束，按超时记失败", evalCase.getId(), timeoutSeconds);
@@ -261,31 +214,25 @@ public class EvalRunner {
         }
 
         cr.setTotalCostMs(System.currentTimeMillis() - startedAt);
-        // 统一由执行器落库：不用 Facade 的埋点，因为跑批需要把 batchId 一起写进去，
-        // 而 Facade 处于生产热路径，不该知道「批次」这个概念。
+        // 由执行器统一落库而非 Facade 埋点：跑批要把 batchId 一起写进去，而 Facade 处于生产热路径，不该知道「批次」。
         persistCaseMetric(cr, evalCase, batchId, evalAppId, outputDir);
         return cr;
     }
 
     /**
-     * 执行 Vue 工程用例：直接调自愈构建，拿到完整过程指标。
-     *
-     * <p>与生产链路的差异只有一点：生产是先流式生成代码（模型通过工具写文件）
-     * 再触发构建，这里同样如此 —— 先消费完整的生成流，再走自愈构建。</p>
+     * 执行 Vue 工程用例：先消费完整的生成流，再走自愈构建，拿到完整过程指标。
      */
     private void executeVueCase(EvalCase evalCase, Long evalAppId, String outputDir,
                                 EvalRunResult.CaseResult cr) {
-        // 1) 消费代码生成流。Vue 模式下模型通过文件工具直接写盘，流里主要是过程性文本
+        // Vue 模式下模型通过文件工具直接写盘
         consumeGenerationStream(evalCase, evalAppId, cr);
 
-        // 2) 故障注入：在「代码已落盘」与「开始构建」之间刻意破坏一处产物。
-        // 这样首轮构建必然失败，自愈才有事可做 —— 否则模型写得好时一次就过，
-        // 「自愈成功率」永远是「本次无用例触发自愈」，整条链路等于没被验证过。
+        // 在「代码已落盘」与「开始构建」之间刻意破坏产物，让首轮必失败、自愈才有事可做；
+        // 否则模型写得好时一次就过，自愈链路等于从未被验证。
         FaultInjectionOutcome injection = injectFaultIfConfigured(evalCase, outputDir);
         if (!injection.applied() && injection.configured()) {
-            // 注入失败绝不能静默跳过：跳过后首轮很可能直接构建通过，
-            // 报告上显示一条「一次通过」的漂亮数据，而这条用例存在的唯一意义
-            // （验证自愈）悄然消失了。宁可把这条判成失败并写明原因。
+            // 注入失败不能静默跳过：那样首轮多半直接构建通过，报告会显示漂亮的「一次通过」，
+            // 而这条用例验证自愈的唯一意义随之消失。宁可判失败并写明原因。
             cr.setFirstBuildPassed(false);
             cr.setFinalPassed(false);
             cr.setHealingAttempts(0);
@@ -302,12 +249,9 @@ public class EvalRunner {
         cr.setBuildCostMs(System.currentTimeMillis() - buildStartedAt);
 
         if (injection.applied() && outcome.isFirstBuildPassed()) {
-            // 注入确实改坏了产物，首轮却通过了 —— 说明这处破坏没能变成构建失败：
-            // 要么目标文件不在构建图里，要么产物在注入之后又被别的流程改写回去了。
-            // 此时「首轮通过」不是生成质量的证明，而是「这一轮根本没测到自愈」。
-            // 2026-09-21 就是后者：并发的生产侧异步自愈抢先修好了产物，
-            // 评测自己的构建随后就过了，报告写成「自愈 0 轮 / 未触发自愈」。
-            // 因此显式判失败：宁可这条用例红着让人去查，也不产出一个看着正常的数字。
+            // 注入确实改坏了产物，首轮却通过，说明这处破坏没变成构建失败：要么目标文件不在构建图里，
+            // 要么产物在注入后被别的并发流程改写回去了。此时「首轮通过」不是生成质量的证明，
+            // 而是「这一轮根本没测到自愈」，故显式判失败。
             cr.setFirstBuildPassed(false);
             cr.setFinalPassed(false);
             cr.setHealingAttempts(0);
@@ -330,19 +274,14 @@ public class EvalRunner {
             cr.setFailureMessage(buildResult.getErrorMessage());
         }
         if (outcome.isFinalPassed()) {
-            // 统计项目根而不是 dist：要衡量的是「AI 写了多少代码」，
-            // 而 dist 是 vite 压缩后的构建产物，大小反映的是打包结果不是生成量。
-            // 且 measureOutput 本身会排除 node_modules 与 dist，
-            // 传 dist 进去会让每个文件都命中排除规则 → 恒为 0（这个坑踩过一次）。
+            // 统计项目根而非 dist：dist 是 vite 压缩产物，反映打包结果不是生成量；
+            // 且 measureOutput 排除 node_modules 与 dist，传 dist 进去恒为 0。
             fillOutputSize(outputDir, cr);
         }
     }
 
     /**
-     * 故障注入的执行结果。
-     *
-     * <p>用一个小对象而不是 boolean，是为了让「没配置注入」和「配置了但注入失败」
-     * 能被区分开 —— 前者是正常流程，后者是必须暴露的异常。</p>
+     * 故障注入的执行结果。用对象而非 boolean，以区分「没配置注入」与「配置了但注入失败」。
      */
     private record FaultInjectionOutcome(boolean configured, boolean applied, String reason) {
         static FaultInjectionOutcome notConfigured() {
@@ -361,11 +300,9 @@ public class EvalRunner {
     /**
      * 按用例配置破坏产物，制造一处确定性的、可自愈的构建失败。
      *
-     * <p>只支持「整文件读 → 字符串替换 → 整文件写」这一种形式：足够表达
-     * 「把 import 路径改到不存在的目录」这类典型可自愈故障（会以
-     * {@code Could not resolve} 形式表现为 {@code COMPILE_ERROR}，
-     * 而这是 {@link BuildFailureTypeEnum#isHealable()} 里唯一为 true 的类型），
-     * 又不至于把评测集变成一个脚本引擎。</p>
+     * <p>只支持「整文件读、字符串替换、整文件写」一种形式：足够表达「把 import 路径改到不存在的
+     * 目录」这类典型可自愈故障（表现为 {@code COMPILE_ERROR}，是
+     * {@link BuildFailureTypeEnum#isHealable()} 里唯一为 true 的类型），又不至于把评测集变成脚本引擎。</p>
      */
     private FaultInjectionOutcome injectFaultIfConfigured(EvalCase evalCase, String outputDir) {
         EvalCase.FaultInjection fi = evalCase.getFaultInjection();
@@ -381,10 +318,8 @@ public class EvalRunner {
                         "目标文件不存在：" + target.getAbsolutePath());
             }
         } else {
-            // 未指定文件时自动定位。这是**推荐用法**，因为模型把组件 import 写在哪个
-            // 文件里并不稳定：同一条 prompt 历次跑批可能落在 App.vue、pages/Home.vue、
-            // pages/HomePage.vue。写死任一个都会在模型换一种组织方式时失效，
-            // 而失效的表现是一条「首轮就通过」的漂亮假数据（若静默跳过的话）。
+            // 未指定文件时自动定位，这是推荐用法：模型把组件 import 写在哪个文件并不稳定
+            //（同一条 prompt 可能落在 App.vue 或 pages/Home.vue），写死会在模型换组织方式时失效。
             target = locateInjectableFile(outputDir, fi.getFind());
             if (target == null) {
                 return FaultInjectionOutcome.failed(String.format(
@@ -401,8 +336,7 @@ public class EvalRunner {
             return FaultInjectionOutcome.failed("读取目标文件失败：" + e.getMessage());
         }
         if (!content.contains(fi.getFind())) {
-            // 找不到就报错而不是静默跳过。这一条会随模型输出风格漂移而命中失败，
-            // 一旦命中失败必须让人立刻知道并去修 find 串，而不是继续产出假数据。
+            // 找不到就报错而非静默跳过：它随模型输出风格漂移而失败，必须立刻让人去修 find 串。
             return FaultInjectionOutcome.failed(String.format(
                     "在 %s 中未找到待替换内容「%s」，可能是模型输出的导入写法变了，请调整 find 串",
                     target.getName(), fi.getFind()));
@@ -421,13 +355,8 @@ public class EvalRunner {
     /**
      * 在产物的 src 目录下找出第一个包含 {@code find} 的源文件。
      *
-     * <p>扫描范围限定在 {@code src} 下、只认 {@code .vue} 与 {@code .js}：
-     * 产物的 {@code node_modules} 体量很大，全目录遍历既慢又可能命中第三方包里的
-     * 同名片段 —— 那样注入的是依赖而不是模型写的代码，构建失败的原因就跑偏了。</p>
-     *
-     * <p>返回 {@code null} 表示没找到，由调用方报错。这里刻意不做「就近取一个文件」
-     * 之类的兜底：注入到不含目标串的文件上等于什么都没做，而那样又会退化成
-     * 「首轮直接通过」的假数据。</p>
+     * <p>只扫 {@code src} 下的 {@code .vue} 与 {@code .js}：node_modules 体量大，全目录遍历既慢又会
+     * 命中第三方包里的同名片段。返回 {@code null} 表示没找到，刻意不做兜底。</p>
      */
     private File locateInjectableFile(String outputDir, String find) {
         File srcDir = new File(outputDir, "src");
@@ -455,10 +384,7 @@ public class EvalRunner {
     }
 
     /**
-     * 列出 src 下的源文件，用于注入失败时把「实际有哪些文件」写进错误信息。
-     *
-     * <p>否则拿到「找不到 xxx」只能靠翻磁盘猜，下一轮照样要再跑一次二十分钟的跑批
-     * 才能定位 —— 一次跑批的成本远高于多打这一行日志。</p>
+     * 列出 src 下的源文件，供注入失败时把实际文件名写进错误信息，省去翻磁盘猜与再跑一轮。
      */
     private String listSourceFiles(String outputDir) {
         File srcDir = new File(outputDir, "src");
@@ -479,10 +405,9 @@ public class EvalRunner {
     }
 
     /**
-     * 执行 HTML / 多文件用例：没有构建步骤，最终通过等价于「解析保存成功」。
+     * 执行 HTML / 多文件用例：无构建步骤，最终通过等价于「解析保存成功」。
      *
-     * <p>{@code outputDir} 由调用方传入而不再在这里现算 —— 现算的那版会连带
-     * 执行一次目录清空，把上一步刚落盘的代码删掉。</p>
+     * <p>{@code outputDir} 由调用方传入而非在此现算：现算会连带清空目录，删掉刚落盘的代码。</p>
      */
     private void executeSimpleCase(EvalCase evalCase, Long evalAppId, String outputDir,
                                    EvalRunResult.CaseResult cr) {
@@ -505,10 +430,7 @@ public class EvalRunner {
     }
 
     /**
-     * 消费代码生成流并计时。
-     *
-     * <p>{@code blockLast()} 会跑到流结束（含流内的保存回调），因此这条语句返回时
-     * 代码已经落盘。</p>
+     * 消费代码生成流并计时。{@code blockLast()} 跑到流结束（含流内保存回调），返回时代码已落盘。
      */
     private void consumeGenerationStream(EvalCase evalCase, Long evalAppId,
                                          EvalRunResult.CaseResult cr) {
@@ -519,9 +441,7 @@ public class EvalRunner {
         cr.setGenerateCostMs(System.currentTimeMillis() - startedAt);
     }
 
-    /**
-     * 把用例结果写成一条评测记录，batchId 带上批次便于聚合查询。
-     */
+    /** 把用例结果写成一条评测记录，batchId 带上批次便于聚合查询。 */
     private void persistCaseMetric(EvalRunResult.CaseResult cr, EvalCase evalCase,
                                    String batchId, Long evalAppId, String outputDir) {
         try {
@@ -556,24 +476,16 @@ public class EvalRunner {
     }
 
     /**
-     * 单条用例的产物目录：与生成侧完全一致的 {@code {codeType}_{appId}} 命名。
+     * 单条用例的产物目录，命名与生成侧一致的 {@code {codeType}_{appId}}。
      *
-     * <p><b>这里只负责清理，不负责创建</b>：目录由生成侧（文件工具 / 保存器）自己建，
-     * 评测只保证它是干净的。之所以强调这点 —— 早先的实现里「读产物」这一步
-     * 顺手调了一次带 {@code FileUtil.clean} 的路径计算，等于把刚落盘的代码清空，
-     * 是个必然踩中的雷。</p>
-     *
-     * <p>清理必须在生成之前做，且用例内只做一次，所以由调用方在启动 worker
-     * 之前显式调用。</p>
-     *
-     * <p>注意 {@code evalRunRoot} 是外部传入的固定值，不从 {@code AppConstant} 现读 ——
-     * 跑批期间 AppConstant 已被换成同一个值，现读会再拼一层目录。</p>
+     * <p>只清理不创建：目录由生成侧自建，评测只保证它干净；清理须在生成之前、用例内只做一次，
+     * 故由调用方在启动 worker 前显式调用。{@code evalRunRoot} 由外部传入而不现读
+     * {@code AppConstant}，否则跑批期间会再拼一层目录。</p>
      */
     private String prepareCaseOutputDir(EvalCase evalCase, Long evalAppId, String evalRunRoot) {
         String dir = evalRunRoot + File.separator
                 + evalCase.getCodeGenType().getValue() + "_" + evalAppId;
-        // 清空重建，杜绝跨轮次残留 —— 否则「这轮通过了」可能是上轮的 dist 还在，
-        // 这是评测里最隐蔽的一类假阳性。
+        // 清空杜绝跨轮残留：否则「这轮通过了」可能是上轮的 dist 还在，是评测里最隐蔽的假阳性。
         FileUtil.clean(dir);
         return dir;
     }
@@ -582,10 +494,8 @@ public class EvalRunner {
             new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
 
     /**
-     * 生成评测用的负数 appId。
-     *
-     * <p>负数与真实应用 id（自增正数）天然隔离：既不会撞上真实应用，
-     * 也让「这是评测数据」在库里一眼可辨。</p>
+     * 生成评测用的负数 appId：与真实应用 id（自增正数）天然隔离，不会撞上真实应用，
+     * 也让「这是评测数据」在库里一眼可辨。
      */
     private Long nextEvalAppId() {
         return -Math.abs(evalAppIdSeq.incrementAndGet());

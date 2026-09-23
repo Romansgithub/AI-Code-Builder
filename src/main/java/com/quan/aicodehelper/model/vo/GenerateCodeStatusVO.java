@@ -5,12 +5,8 @@ import com.quan.aicodehelper.core.stream.GenerationTaskStatusEnum;
 import lombok.Data;
 
 /**
- * 生成任务状态查询结果。
- *
- * <p><b>为什么需要这个接口</b>：断线重连解决的是「连接还在，事件丢了」，
- * 但还有一种情况是「页面整个被刷新了」—— 此时前端连 lastEventId 都没有，
- * 只能问一句「这个应用现在到底在不在生成、上次結果如何」。
- * 没有这个接口，刷新后的页面只能靠用户手动点一下试探，很容易踩出第二次生成。</p>
+ * 生成任务状态查询结果，用于「页面整个被刷新、前端连 lastEventId 都没有」的场景：
+ * 刷新后只能问一句这个应用在不在生成、上次结果如何，否则只能靠用户手动点一下试探、容易踩出第二次生成。
  */
 @Data
 public class GenerateCodeStatusVO {
@@ -18,7 +14,7 @@ public class GenerateCodeStatusVO {
     private Long appId;
 
     /**
-     * 是否存在任务现场（含刚结束、尚在保留期内的任务）。
+     * 是否存在任务现场，含刚结束、尚在保留期内的任务。
      */
     private boolean hasTask;
 

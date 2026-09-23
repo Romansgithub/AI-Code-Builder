@@ -8,10 +8,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 构建结果与失败类型测试。
- *
- * <p>核心断言：只有「代码问题」才可自愈。这条规则决定了自愈循环会不会
- * 在环境问题上白白消耗 token 和用户时间。</p>
+ * 构建结果与失败类型测试：只有「代码问题」才可自愈，否则自愈循环会浪费 token。
  */
 @DisplayName("构建结果")
 class BuildResultTest {

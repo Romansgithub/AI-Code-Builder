@@ -5,10 +5,8 @@ import com.quan.aicodehelper.core.stream.GenerationTaskStatusEnum;
 import lombok.Data;
 
 /**
- * 发起生成后的受理回执。
- *
- * <p>前端拿到它就知道「这次请求已被受理」以及「现在该去订阅哪个应用的进度」。
- * 它刻意不返回事件流 —— 回执一旦返回，生成本身就不再依赖这条连接了。</p>
+ * 发起生成后的受理回执。前端据此知道请求已被受理、该去订阅哪个应用的进度。
+ * 它刻意不返回事件流：回执一旦返回，生成本身就不再依赖这条连接。
  */
 @Data
 public class GenerateCodeVO {
@@ -19,23 +17,14 @@ public class GenerateCodeVO {
     private Long appId;
 
     /**
-     * 任务当前状态。
-     *
-     * <p>大概率是 {@code running}；但若命中「已有进行中任务」的复用路径，
-     * 前端应理解为「你连的是刚才那次生成」，而不是「我这次发起了新的生成」。</p>
+     * 任务当前状态。若命中「已有进行中任务」的复用路径，前端应理解为接续了刚才那次生成，而非新发起一次。
      */
     private String status;
 
-    /**
-     * 状态的中文描述，便于前端直接展示。
-     */
     private String statusDescription;
 
     /**
-     * 是否复用了已有任务。
-     *
-     * <p>区分它有意义：前端可以据此提示「检测到该应用正在生成，已为你接续」，
-     * 而不是让用户以为点了一下又跑了一遍。</p>
+     * 是否复用了已有任务。前端据此提示「检测到该应用正在生成，已为你接续」。
      */
     private boolean reused;
 

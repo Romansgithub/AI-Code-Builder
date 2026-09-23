@@ -22,19 +22,9 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * RAG embedding 启动自检测试。
- *
- * <p><b>为什么这里必须 mock 掉真实调用</b>：自检的职责是「根据客户端给的结果
- * 得出正确结论」，不是「能不能连上 OpenAI 兼容接口」—— 后者由接口方保证，
- * 在测试里跑真实网络既不可重复也会花钱。所以把 {@link EmbeddingClient}
- * 换成桩，专测结论的推导与异常翻译。</p>
- *
- * <p>其中有两条断言是这套检查存在的理由，缺了它们检查就是空转：</p>
- * <ul>
- *   <li>配置不可用时<b>绝不能发起真实请求</b> —— 本地就能判定的问题，
- *       不该花一次注定失败的往返，也不该把「没配好」混进「网络不通」的排查；</li>
- *   <li>跳过时<b>绝不能触碰客户端</b> —— 否则「关了自检」这个承诺是假的。</li>
- * </ul>
+ * RAG embedding 启动自检测试。{@link EmbeddingClient} 换成桩，专测结论推导与异常翻译，
+ * 不跑真实网络。两条断言是这套检查存在的理由：配置不可用时绝不能发起真实请求，
+ * 跳过时绝不能触碰客户端。
  */
 @DisplayName("RAG embedding 启动自检")
 class RagEmbeddingCheckerTest {

@@ -60,16 +60,11 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     @Resource
     private AiCodeGeneratorFacade aiCodeGeneratorFactory;
 
-    /**
-     * 任务现场登记处。生成任务的「唯一性」由它保证 —— 见
-     * {@link #startGeneration}。
-     */
+    /** 任务现场登记处，生成任务的唯一性由它保证（见 {@link #startGeneration}）。 */
     @Resource
     private GenerationProgressRegistry generationProgressRegistry;
 
-    /**
-     * 任务执行器：把生成搬到独立虚拟线程，断开与 HTTP 连接的生命周期绑定。
-     */
+    /** 任务执行器：把生成搬到独立虚拟线程，与 HTTP 连接的生命周期脱钩。 */
     @Resource
     private GenerationTaskExecutor generationTaskExecutor;
 
@@ -87,15 +82,11 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     @Resource
     private AiCodeGenTypeRoutingConfig aiCodeGenTypeRoutingConfig;
 
-    /**
-     * 存储与部署配置。部署访问地址由它统一拼接，避免 host 硬编码漏端口 / 漏 context-path。
-     */
+    /** 存储与部署配置，部署访问地址由它统一拼接，避免 host 硬编码漏端口或 context-path。 */
     @Resource
     private StorageProperties storageProperties;
 
-    /**
-     * LLM 调用预算闸门。类型路由这条路径不经过 Facade，需在此单独过闸。
-     */
+    /** LLM 调用预算闸门：类型路由这条路径不经过 Facade，需在此单独过闸。 */
     @Resource
     private LlmCallGuard llmCallGuard;
 
@@ -127,14 +118,6 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     }
 
 
-    /**
-     * 根据用户请求生成代码
-     * @param appId
-     * @param message
-     * @param loginUser
-     * @return
-     */
-
     @Override
     public GenerationTask startGeneration(Long appId, String message, User loginUser) {
 
@@ -154,28 +137,22 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "无效的代码生成类型");
         }
 
-        // 抢占任务现场。这一步是「重复生成」的唯一防线：
-        // 浏览器自动重连、用户连点、前端重试同时打进来时，只有一个请求能拿到任务，
-        // 其余请求拿到 null 后转为「订阅已有任务」，不会重复烧 token、重复写文件。
+        // 抢占任务是防重复生成的唯一防线：并发请求里只有一个能拿到任务，其余拿到 null 后转为订阅既有任务
         GenerationTask task = generationProgressRegistry.startTask(appId);
         if (task == null) {
             GenerationTask running = generationProgressRegistry.getTask(appId);
-            // 正在跑：不报错，交回既有任务让调用方去订阅 —— 这正是「重连」的语义。
+            // 正在跑时不报错，交回既有任务让调用方订阅，这就是重连的语义
             if (running != null && running.isRunning()) {
                 log.info("应用 {} 已有进行中的生成任务，本次请求转为订阅", appId);
                 return running;
             }
-            // 抢占失败但不是运行中，说明恰好被并发请求抢先；同样交回现场
+            // 抢占失败又不在运行中，是被并发请求抢先了，同样交回现场
             ThrowUtils.throwIf(running == null, ErrorCode.SYSTEM_ERROR, "生成任务启动失败，请重试");
             return running;
         }
 
-        // 已经抢到任务现场，说明这次请求**确实要真跑一次生成**。
-        // 在继续往下走之前先探一次预算：真正的记账在 Facade 里（那里是
-        // 用户生成与评测跑批的唯一交汇点），这里只做「不消耗」的可行性检查。
-        // 若放到抢占之前，被转为「订阅」的请求也会被算成一次调用（它根本不调模型），
-        // 账目虚高；若不检查就直接往下走，额度不足会留下一个
-        // 「已注册但从未启动」的 RUNNING 任务，把应用挡住直到看门狗超时（默认 20 分钟）。
+        // 抢到任务现场才说明这次真要跑生成。此处只做不消耗额度的可行性检查（真正记账在 Facade），
+        // 且必须放在抢占之后：提前会把只订阅的请求也计费；不检查则留下「已注册未启动」的 RUNNING 任务挡住应用。
         try {
             llmCallGuard.assertAvailable("代码生成");
         } catch (RuntimeException e) {
@@ -183,8 +160,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             throw e;
         }
 
-        // 用户消息先落库：它代表用户的真实输入，与生成成功与否无关。
-        // 这样即便生成失败，刷新页面后仍能看到自己发过什么。
+        // 用户消息先落库：它代表真实输入，与生成成败无关，生成失败时刷新页面仍能看到自己发过什么
         chatHistoryService.addChatMessage(appId, message, ChatHistoryMessageTypeEnum.USER.getValue(), loginUser.getId());
 
         Flux<String> contentFlux = aiCodeGeneratorFactory.generateCodeStream(message, codeGenTypeEnum, appId);
@@ -195,9 +171,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     aiResponseBuilder.append(chunk);
                     return chunk;
                 })
-                // 以下回调运行在响应式线程中，异步于本次调用的调用栈，
-                // 因此不能用 @Transactional 包住整个方法 —— 事务会在流完成前就提交。
-                // 这里每次落库都是独立的单条 insert，本身即原子操作，无需外层事务。
+                // 回调跑在响应式线程里，异步于本次调用栈，@Transactional 会在流完成前就提交，故不能包住整个方法；
+                // 此处每次落库都是独立的单条 insert，本身即原子操作，无需外层事务。
                 .doOnComplete(() -> {
                     String aiResponse = aiResponseBuilder.toString();
                     if (StrUtil.isNotBlank(aiResponse)){
@@ -205,14 +180,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     }
                 })
                 .doOnError(error -> {
-                    // 仅记录日志，不把异常信息当 AI 回复写入对话历史 ——
-                    // 否则用户刷新页面会看到一条以「AI回复失败」开头的伪消息，
+                    // 只记日志，不把异常写进对话历史：否则用户刷新后会看到伪消息，
                     // 且该消息会被回填进模型记忆，污染后续对话上下文。
                     log.error("应用 {} 生成代码失败：{}", appId, error.getMessage(), error);
                 });
 
-        // 关键一步：生成被放到独立虚拟线程里跑到头，与 HTTP 连接彻底解耦。
-        // 用户此刻断线不会中断生成，稍后重连还能从事件缓冲里补齐错过的进度。
+        // 生成放到独立虚拟线程里跑到头，与 HTTP 连接解耦：断线不中断生成，重连可从事件缓冲补齐进度
         generationTaskExecutor.start(task, tracked);
         return task;
     }
@@ -229,10 +202,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     }
 
     /**
-     * 安全落库对话消息：失败仅记录日志，不影响主流程。
-     *
-     * <p>落库发生在响应式流的完成回调中，此时主请求早已返回，
-     * 任何异常都无法反馈给前端，只能自行吞掉并记录，避免线程内异常扩散。</p>
+     * 安全落库对话消息，失败只记日志。落库发生在流的完成回调里，主请求早已返回，
+     * 异常无从反馈给前端，只能自行吞掉，避免扩散。
      */
     private void safeSaveChatMessage(Long appId, String message, String messageType, Long userId) {
         try {
@@ -242,12 +213,6 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
     }
 
-    /**
-     * 创建应用
-     * @param appAddRequest
-     * @param loginUser
-     * @return
-     */
     @Override
     public Long createApp(AppAddRequest appAddRequest, User loginUser)
     {
@@ -258,8 +223,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         app.setUserId(loginUser.getId());
         app.setAppName(initPrompt.substring(0, Math.min(initPrompt.length(), 12)));
         AiCodeGenTypeRoutingService routingService = aiCodeGenTypeRoutingConfig.aiCodeGenTypeRoutingService();
-        // 路由是独立于代码生成的一条 LLM 调用路径，不经过 Facade，
-        // 必须单独过闸门，否则这里会成为一个漏账口子
+        // 类型路由是独立于代码生成的一条 LLM 调用路径，不经过 Facade，必须单独过闸，否则这里是漏账口子
         llmCallGuard.acquire("类型路由");
         CodeGenTypeEnum selectedCodeGenType = routingService.routeCodeGenType(initPrompt);
         app.setCodeGenType(selectedCodeGenType.getValue());
@@ -269,12 +233,6 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return app.getId();
     }
 
-    /**
-     * 部署应用
-     * @param appId
-     * @param loginUser
-     * @return
-     */
     @Override
     public String deployApp(Long appId, User loginUser)
     {
@@ -300,8 +258,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         boolean isVueProject = CodeGenTypeEnum.VUE_PROJECT.getValue().equals(codeGenType);
         if (isVueProject)
         {
-            // 走带自愈的构建：部署是用户主动触发且要等结果的场景，
-            // 构建失败时先让 AI 尝试修复，比直接抛「构建失败」更有价值。
+            // 走带自愈的构建：部署是用户主动触发且要等结果的场景，构建失败先让 AI 试着修比直接抛错更有价值
             BuildResult buildResult = buildSelfHealingService.buildWithHealing(sourceDirPath, appId);
             ThrowUtils.throwIf(!buildResult.isSuccess(), ErrorCode.SYSTEM_ERROR,
                     "Vue 项目构建失败：" + StrUtil.blankToDefault(buildResult.getErrorMessage(), "请检查构建日志"));
@@ -313,8 +270,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             {
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR, "构建产物 dist 不存在，请先完成 Vue 项目构建");
             }
-            // 先清空部署目录再拷贝：copyContent 是「按文件覆盖」，源目录里已删除的文件
-            // 会残留在部署目录中（如改名后的旧 chunk），表现为「重新部署了但页面还是旧的」。
+            // 必须先清空部署目录：copyContent 是按文件覆盖，源目录里已删除的文件会残留（如改名后的旧 chunk），
+            // 表现为「重新部署了但页面还是旧的」。
             File deployTarget = new File(deployDirPath);
             FileUtil.clean(deployTarget);
             FileUtil.copyContent(deploySourceDir, deployTarget, true);
@@ -329,18 +286,13 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         updateApp.setDeployedTime(java.time.LocalDateTime.now());
         boolean result = this.updateById(updateApp);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR, "更新应用部署信息失败");
-        // 部署访问地址统一由 StorageProperties 拼接，始终带尾斜杠 —— 预览页 index.html 用的是
-        // 相对路径 "./assets/xxx"，缺少尾斜杠时浏览器会把 deployKey 当文件名，静态资源全部 404。
+        // 访问地址统一由 StorageProperties 拼接并带尾斜杠：预览页用相对路径 "./assets/xxx"，
+        // 缺尾斜杠时浏览器会把 deployKey 当文件名，静态资源全部 404。
         String appDeployUrl = storageProperties.buildDeployUrl(deployKey);
         generateAppScreenshotAsync(appId, appDeployUrl);
         return appDeployUrl;
     }
 
-    /**
-     * 异步生成应用截图并更新封面
-     * @param appId
-     * @param appDeployUrl
-     */
     @Override
     public void generateAppScreenshotAsync(Long appId, String appDeployUrl) {
         Thread.startVirtualThread(() ->{
@@ -358,18 +310,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     log.warn("应用 {} 封面更新失败", appId);
                 }
             } catch (Exception e) {
-                // 该方法运行在独立虚拟线程中，异常若抛出将无人接收（仅打印到控制台），
-                // 因此必须在此处兜底捕获，避免静默失败
+                // 该方法跑在独立虚拟线程里，异常抛出无人接收，必须在此兜底，否则静默失败
                 log.error("应用 {} 截图生成或封面更新异常：{}", appId, e.getMessage(), e);
             }
         });
     }
 
-    /**
-     * 删除应用
-     * @param appId
-     * @return
-     */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean removeById(Long appId)
@@ -377,10 +323,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         if (appId == null || appId <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "应用ID不能为空");
         }
-        // 先删对话历史、再删应用：两者必须同成同败，
-        // 否则中途失败会残留指向已不存在应用的孤儿对话记录。
-        // 注意执行顺序 —— 若先删应用，一旦后续失败则应用已消失而历史仍在，
-        // 数据更难修复；先清理从数据再删主记录，失败时整体回滚代价最小。
+        // 先删对话历史再删应用，两者必须同成同败：否则会残留指向已不存在应用的孤儿记录。
+        // 顺序也不能反：先删应用一旦后续失败，应用已消失而历史仍在，数据更难修复。
         chatHistoryService.deleteByAppId(appId);
         boolean removed = super.removeById(appId);
         if (!removed) {
@@ -389,11 +333,6 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return true;
     }
 
-    /**
-     * 获取应用VO
-     * @param app
-     * @return
-     */
     @Override
     public AppVO getAppVO(App app)
     {
@@ -412,17 +351,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return appVO;
     }
 
-    /**
-     * 获取应用VO列表
-     * @param appList
-     * @return
-     */
     @Override
     public List<AppVO> getAppVOList(List<App> appList) {
         if (CollUtil.isEmpty(appList)) {
             return new ArrayList<>();
         }
-        // 批量获取用户信息，避免 N+1 查询问题
+        // 批量取用户信息，避免 N+1 查询
         Set<Long> userIds = appList.stream()
                 .map(App::getUserId)
                 .collect(Collectors.toSet());

@@ -6,9 +6,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-/**
- * RedisChatMemoryStore配置类
- */
 @Configuration
 @ConfigurationProperties(prefix = "spring.data.redis")
 @Data

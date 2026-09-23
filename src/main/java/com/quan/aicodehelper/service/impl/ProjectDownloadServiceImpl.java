@@ -20,9 +20,6 @@ import java.util.Set;
 @Slf4j
 public class ProjectDownloadServiceImpl implements ProjectDownloadService {
 
-    /**
-     * 忽略的文件名
-     */
     private static final Set<String> IGNORED_NAMES = Set.of(
             "node_modules",
             ".git",
@@ -36,9 +33,6 @@ public class ProjectDownloadServiceImpl implements ProjectDownloadService {
             ".vscode"
     );
 
-    /**
-     * 忽略的文件扩展名
-     */
     private static final Set<String> IGNORED_EXTENSIONS = Set.of(
             ".log",
             ".tmp",
@@ -46,10 +40,7 @@ public class ProjectDownloadServiceImpl implements ProjectDownloadService {
     );
 
     /**
-     * 判断路径是否被允许
-     * @param projectRoot
-     * @param fullPath
-     * @return
+     * 逐段判断相对路径：任一段命中忽略名单即拒绝，嵌套目录里的 node_modules 也能排除。
      */
     private boolean isPathAllowed(Path projectRoot, Path fullPath){
         Path relativePath = projectRoot.relativize(fullPath);
@@ -65,12 +56,6 @@ public class ProjectDownloadServiceImpl implements ProjectDownloadService {
         return true;
     }
 
-    /**
-     * 下载项目为zip文件
-     * @param projectPath
-     * @param downloadFileName
-     * @param response
-     */
     @Override
     public void downloadProjectAsZip(String projectPath, String downloadFileName, HttpServletResponse response)
     {

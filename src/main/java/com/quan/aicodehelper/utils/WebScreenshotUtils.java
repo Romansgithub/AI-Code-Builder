@@ -38,34 +38,20 @@ public class WebScreenshotUtils {
         webDriver.quit();
     }
 
-    /**
-     * 初始化 Chrome 浏览器驱动
-     */
     private static WebDriver initChromeDriver(int width, int height) {
         try {
-            // 自动管理 ChromeDriver
             WebDriverManager.chromedriver().setup();
-            // 配置 Chrome 选项
             ChromeOptions options = new ChromeOptions();
-            // 无头模式
             options.addArguments("--headless");
-            // 禁用GPU（在某些环境下避免问题）
             options.addArguments("--disable-gpu");
-            // 禁用沙盒模式（Docker环境需要）
+            // Docker 环境必需
             options.addArguments("--no-sandbox");
-            // 禁用开发者shm使用
             options.addArguments("--disable-dev-shm-usage");
-            // 设置窗口大小
             options.addArguments(String.format("--window-size=%d,%d", width, height));
-            // 禁用扩展
             options.addArguments("--disable-extensions");
-            // 设置用户代理
             options.addArguments("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
-            // 创建驱动
             WebDriver driver = new ChromeDriver(options);
-            // 设置页面加载超时
             driver.manage().timeouts().pageLoadTimeout(Duration.ofSeconds(30));
-            // 设置隐式等待
             driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
             return driver;
         } catch (Exception e) {
@@ -74,11 +60,6 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 保存图片到指定路径
-     * @param imageBytes
-     * @param imagePath
-     */
     private static void saveImage(byte[] imageBytes, String imagePath)
     {
         try{
@@ -91,11 +72,6 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 压缩图片
-     * @param originalImagePath
-     * @param compressedImagePath
-     */
     private static void compressImage(String originalImagePath, String compressedImagePath){
         final float COMPRESSION_QUALITY = 0.3f;
         try{
@@ -111,10 +87,6 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 等待页面加载完成
-     * @param driver
-     */
     private static void waitForPageLoad(WebDriver driver)
     {
         try{
@@ -123,6 +95,7 @@ public class WebScreenshotUtils {
                     .executeScript("return document.readyState")
                     .equals("complete")
             );
+            // readyState 完成只代表 DOM 就绪，再等 2 秒让前端渲染出内容
             Thread.sleep(2000);
             log.info("页面加载完成");
         } catch (InterruptedException e) {
@@ -131,11 +104,7 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 保存网页截图
-     * @param webUrl
-     * @return
-     */
+    /** 截图网页，压缩后返回压缩图路径（原始 PNG 会被删掉）。 */
     public static String saveWebPageScreenshot(String webUrl)
     {
         if (StrUtil.isBlank(webUrl)){
@@ -143,8 +112,7 @@ public class WebScreenshotUtils {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "webUrl 为空");
         }
         try {
-            // 截图临时目录：与代码产物同源，统一由 AppConstant 提供根目录，
-            // 避免各处自行用 user.dir 推算导致位置不一致。
+            // 临时目录挂在代码产物根目录下，避免各处各用 user.dir 推算导致位置不一致
             String rootPath = AppConstant.getCodeOutputRootDir() + File.separator + "screenshots"
                     + File.separator + UUID.randomUUID().toString().substring(0,8);
             FileUtil.mkdir(rootPath);

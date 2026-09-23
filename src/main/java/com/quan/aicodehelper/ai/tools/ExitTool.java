@@ -19,12 +19,6 @@ public class ExitTool extends BaseTool {
         return "退出工具调用";
     }
 
-    /**
-     * 退出工具调用
-     * 当任务完成或无需继续使用工具时调用此方法
-     *
-     * @return 退出确认信息
-     */
     @Tool("当任务已完成或无需继续调用工具时，使用此工具退出操作，防止循环")
     public String exit() {
         log.info("AI 请求退出工具调用");

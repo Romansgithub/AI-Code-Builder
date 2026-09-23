@@ -14,10 +14,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 
-/**
- * 文件修改工具
- * 支持 AI 通过工具调用的方式修改文件内容
- */
 @Slf4j
 @Component
 public class FileModifyTool extends BaseTool {

@@ -26,17 +26,9 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 
 /**
- * 检索上下文注入位置的端到端验证。
- *
- * <p><b>为什么需要这个测试，而不是靠 RAG 自己的单测</b>：RAG 那一串类（扫描 / 切块 / 检索 /
- * 渲染）都只保证「生成了正确的上下文文本」。而检索结果究竟有没有真正进到发给模型的请求里、
- * 进的是哪一条 message，取决于 {@code AiServices} 对 {@code @SystemMessage(fromResource=...)}
- * 里 {@code {{projectContext}}} 的渲染行为 —— 这段逻辑一行都不在我们自己的代码里。
- * 它要是没生效，表现为「检索算了、钱花了、模型没看到」，而所有单测依然全绿。</p>
- *
- * <p>所以这里用真实的 prompt 资源文件 + 生产同款输入护栏搭一个 {@code AiCodeGeneratorService}，
- * mock 掉 {@link StreamingChatModel} 把实际发出的 {@link ChatRequest} 截住，
- * 直接断言两条 message 的内容。</p>
+ * 检索上下文注入位置的端到端验证：真实 prompt 资源 + 生产同款护栏搭服务，mock 掉
+ * {@link StreamingChatModel} 截住 {@link ChatRequest}。RAG 自身单测只保证上下文文本正确，
+ * 是否真进到请求里取决于 {@code AiServices} 对 {@code {{projectContext}}} 的渲染。
  */
 @DisplayName("检索上下文注入 system message")
 class AiCodeGeneratorServicePromptInjectionTest {
@@ -53,14 +45,12 @@ class AiCodeGeneratorServicePromptInjectionTest {
             </template>
             ```""";
 
-    /** 每次被调用时截获的请求，模型不会真的被调用。 */
+    /** 截获的请求；模型不会真的被调用 */
     private final List<ChatRequest> captured = new CopyOnWriteArrayList<>();
 
     /**
-     * 用生产同款配置搭一个真服务，只把模型换成 mock。
-     *
-     * <p>刻意保留 {@link PromptSafetyInputGuardrail}：它只审视 user message。
-     * 检索内容一旦被误拼进 user message，护栏会直接拒掉请求 —— 本测试就是要守住这条线。</p>
+     * 用生产同款配置搭服务，只把模型换成 mock。刻意保留 {@link PromptSafetyInputGuardrail}：
+     * 它只审视 user message，检索内容若被误拼进去会被直接拒掉。
      */
     private AiCodeGeneratorService newService() {
         StreamingChatModel model = mock(StreamingChatModel.class);
@@ -172,9 +162,8 @@ class AiCodeGeneratorServicePromptInjectionTest {
     class GuardrailBoundary {
 
         /**
-         * 这条是整份设计的理由所在：真实检索上下文动辄几千字，
-         * 走 user message 会被 1000 字护栏当场拒掉。下面的用例先证明护栏在本测试里
-         * 确实是生效的（否则上一条测试就是空转），再证明大上下文走 system message 平安通过。
+         * 真实检索上下文动辄几千字，走 user message 会被 1000 字护栏当场拒掉。
+         * 下面两条先证明护栏生效，再证明大上下文走 system message 平安通过。
          */
         @Test
         @DisplayName("超长内容走 user message 会被护栏拒绝 —— 证明护栏确实生效")

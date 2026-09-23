@@ -1,6 +1,5 @@
 <template>
   <div id="appChatPage">
-    <!-- 顶部栏 -->
     <div class="header-bar">
       <div class="header-left">
         <h1 class="app-name">{{ appInfo?.appName || '网站生成器' }}</h1>
@@ -36,13 +35,9 @@
       </div>
     </div>
 
-    <!-- 主要内容区域 -->
     <div class="main-content">
-      <!-- 左侧对话区域 -->
       <div class="chat-section">
-        <!-- 消息区域 -->
         <div class="messages-container" ref="messagesContainer">
-          <!-- 加载更多按钮 -->
           <div v-if="hasMoreHistory" class="load-more-container">
             <a-button type="link" @click="loadMoreHistory" :loading="loadingHistory" size="small">
               加载更多历史消息
@@ -80,7 +75,6 @@
           </div>
         </div>
 
-        <!-- 选中元素信息展示 -->
         <a-alert
             v-if="selectedElementInfo"
             class="selected-element-alert"
@@ -118,7 +112,6 @@
           </template>
         </a-alert>
 
-        <!-- 用户消息输入框 -->
         <div class="input-container">
           <div class="input-wrapper">
             <a-tooltip v-if="!isOwner" title="无法在别人的作品下对话哦~" placement="top">
@@ -155,7 +148,6 @@
           </div>
         </div>
       </div>
-      <!-- 右侧网页展示区域 -->
       <div class="preview-section">
         <div class="preview-header">
           <h3>生成后的网页展示</h3>
@@ -202,7 +194,6 @@
       </div>
     </div>
 
-    <!-- 应用详情弹窗 -->
     <AppDetailModal
         v-model:open="appDetailVisible"
         :app="appInfo"
@@ -211,7 +202,6 @@
         @delete="deleteApp"
     />
 
-    <!-- 部署成功弹窗 -->
     <DeploySuccessModal
         v-model:open="deployModalVisible"
         :deploy-url="deployUrl"
@@ -255,11 +245,9 @@ const route = useRoute()
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
 
-// 应用信息
 const appInfo = ref<API.AppVO>()
 const appId = ref<any>()
 
-// 对话相关
 interface Message {
   type: 'user' | 'ai'
   content: string
@@ -273,26 +261,21 @@ const userInput = ref('')
 const isGenerating = ref(false)
 const messagesContainer = ref<HTMLElement>()
 
-// 对话历史相关
 const loadingHistory = ref(false)
 const hasMoreHistory = ref(false)
 const lastCreateTime = ref<string>()
 const historyLoaded = ref(false)
 
-// 预览相关
 const previewUrl = ref('')
 const previewReady = ref(false)
 const previewVersion = ref(0)
 
-// 部署相关
 const deploying = ref(false)
 const deployModalVisible = ref(false)
 const deployUrl = ref('')
 
-// 下载相关
 const downloading = ref(false)
 
-// 可视化编辑相关
 const isEditMode = ref(false)
 const selectedElementInfo = ref<ElementInfo | null>(null)
 const visualEditor = new VisualEditor({
@@ -301,7 +284,6 @@ const visualEditor = new VisualEditor({
   },
 })
 
-// 权限相关
 const isOwner = computed(() => {
   return appInfo.value?.userId === loginUserStore.loginUser.id
 })
@@ -310,15 +292,12 @@ const isAdmin = computed(() => {
   return loginUserStore.loginUser.userRole === 'admin'
 })
 
-// 应用详情相关
 const appDetailVisible = ref(false)
 
-// 显示应用详情
 const showAppDetail = () => {
   appDetailVisible.value = true
 }
 
-// 加载对话历史
 const loadChatHistory = async (isLoadMore = false) => {
   if (!appId.value || loadingHistory.value) return
   loadingHistory.value = true
@@ -327,7 +306,6 @@ const loadChatHistory = async (isLoadMore = false) => {
       appId: appId.value,
       pageSize: 10,
     }
-    // 如果是加载更多，传递最后一条消息的创建时间作为游标
     if (isLoadMore && lastCreateTime.value) {
       params.lastCreateTime = lastCreateTime.value
     }
@@ -335,7 +313,6 @@ const loadChatHistory = async (isLoadMore = false) => {
     if (res.data.code === 0 && res.data.data) {
       const chatHistories = res.data.data.records || []
       if (chatHistories.length > 0) {
-        // 将对话历史转换为消息格式，并按时间正序排列（老消息在前）
         const historyMessages: Message[] = chatHistories
             .map((chat) => ({
               type: (chat.messageType === 'user' ? 'user' : 'ai') as 'user' | 'ai',
@@ -344,15 +321,12 @@ const loadChatHistory = async (isLoadMore = false) => {
             }))
             .reverse() // 反转数组，让老消息在前
         if (isLoadMore) {
-          // 加载更多时，将历史消息添加到开头
           messages.value.unshift(...historyMessages)
         } else {
-          // 初始加载，直接设置消息列表
           messages.value = historyMessages
         }
-        // 更新游标
         lastCreateTime.value = chatHistories[chatHistories.length - 1]?.createTime
-        // 检查是否还有更多历史
+        // 满页（pageSize=10）才可能还有更多
         hasMoreHistory.value = chatHistories.length === 10
       } else {
         hasMoreHistory.value = false
@@ -367,12 +341,10 @@ const loadChatHistory = async (isLoadMore = false) => {
   }
 }
 
-// 加载更多历史消息
 const loadMoreHistory = async () => {
   await loadChatHistory(true)
 }
 
-// 获取应用信息
 const fetchAppInfo = async () => {
   const id = route.params.id as string
   if (!id) {
@@ -388,14 +360,11 @@ const fetchAppInfo = async () => {
     if (res.data.code === 0 && res.data.data) {
       appInfo.value = res.data.data
 
-      // 先加载对话历史
       await loadChatHistory()
-      // 如果有至少2条对话记录，展示对应的网站
+      // 至少一问一答才说明生成了内容
       if (messages.value.length >= 2) {
         updatePreview()
       }
-      // 检查是否需要自动发送初始提示词
-      // 只有在是自己的应用且没有对话历史时才自动发送
       if (
           appInfo.value.initPrompt &&
           isOwner.value &&
@@ -415,15 +384,12 @@ const fetchAppInfo = async () => {
   }
 }
 
-// 发送初始消息
 const sendInitialMessage = async (prompt: string) => {
-  // 添加用户消息
   messages.value.push({
     type: 'user',
     content: prompt,
   })
 
-  // 添加AI消息占位符
   const aiMessageIndex = messages.value.length
   messages.value.push({
     type: 'ai',
@@ -434,19 +400,16 @@ const sendInitialMessage = async (prompt: string) => {
   await nextTick()
   scrollToBottom()
 
-  // 开始生成
   isGenerating.value = true
   await generateCode(prompt, aiMessageIndex)
 }
 
-// 发送消息
 const sendMessage = async () => {
   if (!userInput.value.trim() || isGenerating.value) {
     return
   }
 
   let message = userInput.value.trim()
-  // 如果有选中的元素，将元素信息添加到提示词中
   if (selectedElementInfo.value) {
     let elementContext = `\n\n选中元素信息：`
     if (selectedElementInfo.value.pagePath) {
@@ -459,13 +422,11 @@ const sendMessage = async () => {
     message += elementContext
   }
   userInput.value = ''
-  // 添加用户消息（包含元素信息）
   messages.value.push({
     type: 'user',
     content: message,
   })
 
-  // 发送消息后，清除选中元素并退出编辑模式
   if (selectedElementInfo.value) {
     clearSelectedElement()
     if (isEditMode.value) {
@@ -473,7 +434,6 @@ const sendMessage = async () => {
     }
   }
 
-  // 添加AI消息占位符
   const aiMessageIndex = messages.value.length
   messages.value.push({
     type: 'ai',
@@ -484,39 +444,32 @@ const sendMessage = async () => {
   await nextTick()
   scrollToBottom()
 
-  // 开始生成
   isGenerating.value = true
   await generateCode(message, aiMessageIndex)
 }
 
-/** 当前生成流的取消句柄。组件卸载或用户中断时用它主动断开 */
+/** 当前生成流的取消句柄，组件卸载或用户中断时主动断开 */
 let streamAbort: AbortController | null = null
 
-/** 已收到的事件序号，重连时作为 Last-Event-ID 上报，实现断点续传 */
+/** 已收到的事件序号，重连时作为 Last-Event-ID 上报续传 */
 let lastEventId = 0
 
-/** 重连次数上限。超过就不再重试，避免无限重连掩盖真实故障 */
+/** 重连次数上限，避免无限重连掩盖真实故障 */
 const MAX_RECONNECT_ATTEMPTS = 5
 
 /**
  * 生成代码。
  *
- * <p><b>与旧实现的关键差别</b>：旧版把「触发生成」和「接收进度」合并在一个
- * EventSource 长连接里，导致浏览器断线后自动重放请求时，服务端会把代码再生成一遍。
- * 现在拆成两步 —— 先 POST 触发（写操作，浏览器不会自动重放），
- * 再 GET 订阅进度（读操作，重复订阅只是多听一遍）。</p>
- *
- * <p>断线后由本函数显式重连，并带上 {@code lastEventId} 续传，
- * 服务端会把断线期间错过的进度补齐。</p>
+ * 拆成 POST 触发与 GET 订阅两步：写请求不会被浏览器自动重放，断连也不波及生成。
+ * 断线后由本函数显式重连，并带 lastEventId 续传当前生成。
  */
 const generateCode = async (userMessage: string, aiMessageIndex: number) => {
   let streamCompleted = false
   let reconnectAttempts = 0
 
-  // 重置续传起点：这是一次全新的生成，从 0 开始收事件
+  // 全新生成，续传起点归零
   lastEventId = 0
 
-  // 获取 axios 配置的 baseURL
   const baseURL = request.defaults.baseURL || API_BASE_URL
 
   const markDone = async () => {
@@ -546,7 +499,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
     if (streamCompleted) return
 
     if (event === 'message') {
-      // 正文增量。它没有事件名，直接拼接即可
+      // 正文增量无事件名，直接拼接
       try {
         const parsed = JSON.parse(data)
         const content = parsed.d
@@ -563,7 +516,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
     }
 
     if (event === 'progress') {
-      // 进度事件形如 {"d":"正在构建项目..."}，进入气泡下方的进度列表
+      // 形如 {"d":"正在构建项目..."}
       try {
         const parsed = JSON.parse(data)
         if (parsed.d) {
@@ -584,7 +537,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
       return
     }
 
-    // error：生成过程中失败（后端流内异常）
+    // error：后端流内异常
     if (event === 'error') {
       let errorMessage = '生成过程中出现错误'
       try {
@@ -596,7 +549,7 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
       return
     }
 
-    // business-error：请求本身被拒绝（无权限、无任务、限流等）
+    // business-error：请求被拒绝（无权限、无任务、限流等）
     if (event === 'business-error') {
       let errorMessage = '生成过程中出现错误'
       try {
@@ -609,8 +562,6 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
   }
 
   try {
-    // ---- 第一步：触发生成 ----
-    // 用 POST：写操作必须让浏览器知道「这不是可以随便重放的请求」
     const triggerResponse = await request<API.BaseResponseGenerateCodeVO>(
       '/app/chat/gen/code',
       {
@@ -622,12 +573,10 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
 
     const receipt = triggerResponse.data?.data
     if (receipt?.reused) {
-      // 命中已有任务：说明这个应用正在生成，本次请求接续到那次任务上，
-      // 而不是又起了一次。明确告诉用户，避免他以为自己点了两遍
+      // 命中已有任务：本次请求接续到进行中的生成，明确告知用户避免误以为点了两遍
       message.info('检测到该应用正在生成，已为你接续当前进度')
     }
 
-    // ---- 第二步：订阅进度，断线自动续传 ----
     while (!streamCompleted && reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
       streamAbort = new AbortController()
 
@@ -638,8 +587,8 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
         lastEventId,
         signal: streamAbort.signal,
         onMessage: (msg) => {
-          // 记录序号用于续传。服务端只有在有 id 时才会带上，
-          // done 之类的收尾事件可能没有 id，此时不能把起点改小
+          // 记录续传水位：done 之类的收尾事件可能没有 id，
+          // 只有拿到 id 时才更新，且不能把起点改小
           if (msg.id) {
             const parsed = Number(msg.id)
             if (!Number.isNaN(parsed) && parsed > lastEventId) {
@@ -655,14 +604,14 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
 
       if (streamCompleted) break
 
-      // 连接结束但没收到 done/error：属于网络中断，值得重连
+      // 流结束但没收到 done/error，视为网络中断
       reconnectAttempts += 1
       if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
         failWith('连接多次中断，请刷新页面查看生成结果')
         break
       }
 
-      // 递增退避：避免服务端刚重启就被连着打
+      // 递增退避，避免服务端刚重启就被连着打
       const delay = Math.min(1000 * reconnectAttempts, 5000)
       message.info(`进度连接中断，正在重连（${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}）...`)
       await new Promise((resolve) => setTimeout(resolve, delay))
@@ -673,7 +622,6 @@ const generateCode = async (userMessage: string, aiMessageIndex: number) => {
   }
 }
 
-// 错误处理函数
 const handleError = (error: unknown, aiMessageIndex: number) => {
   console.error('生成代码失败：', error)
   messages.value[aiMessageIndex].content = '抱歉，生成过程中出现了错误，请重试。'
@@ -682,7 +630,6 @@ const handleError = (error: unknown, aiMessageIndex: number) => {
   isGenerating.value = false
 }
 
-// 更新预览
 const updatePreview = () => {
   if (appId.value) {
     const codeGenType = appInfo.value?.codeGenType || CodeGenTypeEnum.HTML
@@ -693,14 +640,12 @@ const updatePreview = () => {
   }
 }
 
-// 滚动到底部
 const scrollToBottom = () => {
   if (messagesContainer.value) {
     messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
   }
 }
 
-// 下载代码
 const downloadCode = async () => {
   if (!appId.value) {
     message.error('应用ID不存在')
@@ -717,17 +662,14 @@ const downloadCode = async () => {
     if (!response.ok) {
       throw new Error(`下载失败: ${response.status}`)
     }
-    // 获取文件名
     const contentDisposition = response.headers.get('Content-Disposition')
     const fileName = contentDisposition?.match(/filename="(.+)"/)?.[1] || `app-${appId.value}.zip`
-    // 下载文件
     const blob = await response.blob()
     const downloadUrl = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = downloadUrl
     link.download = fileName
     link.click()
-    // 清理
     URL.revokeObjectURL(downloadUrl)
     message.success('代码下载成功')
   } catch (error) {
@@ -738,7 +680,6 @@ const downloadCode = async () => {
   }
 }
 
-// 部署应用
 const deployApp = async () => {
   if (!appId.value) {
     message.error('应用ID不存在')
@@ -766,21 +707,18 @@ const deployApp = async () => {
   }
 }
 
-// 在新窗口打开预览
 const openInNewTab = () => {
   if (previewUrl.value) {
     window.open(previewUrl.value, '_blank')
   }
 }
 
-// 打开部署的网站
 const openDeployedSite = () => {
   if (deployUrl.value) {
     window.open(deployUrl.value, '_blank')
   }
 }
 
-// iframe加载完成
 const onIframeLoad = () => {
   previewReady.value = true
   const iframe = document.querySelector('.preview-iframe') as HTMLIFrameElement
@@ -790,14 +728,12 @@ const onIframeLoad = () => {
   }
 }
 
-// 编辑应用
 const editApp = () => {
   if (appInfo.value?.id) {
     router.push(`/app/edit/${appInfo.value.id}`)
   }
 }
 
-// 删除应用
 const deleteApp = async () => {
   if (!appInfo.value?.id) return
 
@@ -816,15 +752,12 @@ const deleteApp = async () => {
   }
 }
 
-// 可视化编辑相关函数
 const toggleEditMode = () => {
-  // 检查 iframe 是否已经加载
   const iframe = document.querySelector('.preview-iframe') as HTMLIFrameElement
   if (!iframe) {
     message.warning('请等待页面加载完成')
     return
   }
-  // 确保 visualEditor 已初始化
   if (!previewReady.value) {
     message.warning('请等待页面加载完成')
     return
@@ -845,21 +778,16 @@ const getInputPlaceholder = () => {
   return '请描述你想生成的网站，越详细效果越好哦'
 }
 
-// 页面加载时获取应用信息
 onMounted(() => {
   fetchAppInfo()
 
-  // 监听 iframe 消息
   window.addEventListener('message', (event) => {
     visualEditor.handleIframeMessage(event)
   })
 })
 
-// 清理资源
 onUnmounted(() => {
-  // 必须显式断开：原生 EventSource 时代「组件卸载会自动清理」其实是个误解 ——
-  // 连接一直挂着，后端那条流也会继续跑，继续烧 token。
-  // 现在用 AbortController 主动终止，语义明确且可测。
+  // 必须显式断开：组件卸载不会自动清理这条流，后端会继续生成并继续烧 token。
   streamAbort?.abort()
   streamAbort = null
 })
@@ -874,7 +802,6 @@ onUnmounted(() => {
   background: #fdfdfd;
 }
 
-/* 顶部栏 */
 .header-bar {
   display: flex;
   justify-content: space-between;
@@ -904,7 +831,6 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-/* 主要内容区域 */
 .main-content {
   flex: 1;
   display: flex;
@@ -913,7 +839,6 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* 左侧对话区域 */
 .chat-section {
   flex: 2;
   display: flex;
@@ -995,14 +920,12 @@ onUnmounted(() => {
   color: #666;
 }
 
-/* 加载更多按钮 */
 .load-more-container {
   text-align: center;
   padding: 8px 0;
   margin-bottom: 16px;
 }
 
-/* 输入区域 */
 .input-container {
   padding: 16px;
   background: white;
@@ -1022,7 +945,6 @@ onUnmounted(() => {
   right: 8px;
 }
 
-/* 右侧预览区域 */
 .preview-section {
   flex: 3;
   display: flex;
@@ -1095,7 +1017,6 @@ onUnmounted(() => {
   margin: 0 16px;
 }
 
-/* 工具执行进度日志 */
 .progress-log {
   margin-bottom: 8px;
   padding: 8px 12px;
@@ -1112,7 +1033,6 @@ onUnmounted(() => {
   line-height: 1.8;
 }
 
-/* 响应式设计 */
 @media (max-width: 1024px) {
   .main-content {
     flex-direction: column;
@@ -1143,7 +1063,6 @@ onUnmounted(() => {
     max-width: 85%;
   }
 
-  /* 选中元素信息样式 */
   .selected-element-alert {
     margin: 0 16px;
   }
@@ -1196,7 +1115,6 @@ onUnmounted(() => {
     border: 1px solid #e1e4e8;
   }
 
-  /* 编辑模式按钮样式 */
   .edit-mode-active {
     background-color: #52c41a !important;
     border-color: #52c41a !important;
@@ -1211,7 +1129,7 @@ onUnmounted(() => {
 </style>
 
 <style scoped>
-/* ===== 商业工作台皮肤 ===== */
+/* 商业工作台皮肤 */
 #appChatPage {
   height: calc(100vh - var(--header-height));
   padding: 0;
@@ -1295,7 +1213,6 @@ onUnmounted(() => {
   color: var(--color-text-tertiary);
 }
 
-/* 选中元素信息 */
 .selected-element-info {
   line-height: 1.5;
 }

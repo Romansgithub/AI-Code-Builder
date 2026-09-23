@@ -22,17 +22,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
- * 静态资源预览控制器测试。
- *
- * <p><b>回归背景</b>：该控制器曾用固定长度做 substring 计算资源路径
- * （{@code getRequestURI().substring(("/static/" + deployKey).length())}）。
- * 一旦在中间插入 context-path 剥离逻辑，偏移量就会错位，把末尾的 {@code "/"} 一并吃掉，
- * 使 resourcePath 退化为空串并触发 301 跳转到 {@code xxx//}（双斜杠），
- * 前端预览 iframe 表现为全量 404/500。</p>
- *
- * <p>本测试用 {@code standaloneSetup} 启动纯 MockMvc，不加载 Spring 容器、
- * 不依赖数据库/Redis/LLM，因此可快速、稳定、可复现地锁死上述行为。</p>
- *
+ * 静态资源预览控制器测试：锁定路径解析、HTTP 行为、路径穿越防护与 Content-Type 映射。
  * @author <a href="https://github.com/romansgithub">Roman</a>
  */
 @DisplayName("静态资源预览控制器")
@@ -64,8 +54,7 @@ class StaticResourceControllerTest {
         Files.writeString(Path.of(previewDir.toString(), "assets", "app.js"),
                 "console.log('ok')", StandardCharsets.UTF_8);
 
-        // 越权目标放在预览根目录的上一级（tmp/ 下），
-        // 而不是根目录内 —— 放在根目录内属于合法可访问范围，测不出穿越防护
+        // 越权目标放在预览根目录的上一级；若放在根目录内属合法范围，测不出穿越防护
         outsideDir = Path.of(AppConstant.getCodeOutputRootDir()).getParent();
         outsideFile = Path.of(outsideDir.toString(), "outside-secret-for-test.txt");
         Files.writeString(outsideFile, "should-not-be-served", StandardCharsets.UTF_8);
@@ -89,10 +78,6 @@ class StaticResourceControllerTest {
         }
         file.delete();
     }
-
-    // ==================================================================
-    // 一、路径解析逻辑（核心回归点）—— 直接单测 resolveResourcePath
-    // ==================================================================
 
     @Nested
     @DisplayName("资源路径解析（无 context-path）")
@@ -154,7 +139,6 @@ class StaticResourceControllerTest {
         void trailingSlashWithContextPath() {
             String path = controller.resolveResourcePath(DEPLOY_KEY,
                     requestFor(CONTEXT_PATH, "/static/" + DEPLOY_KEY + "/"));
-            // 关键断言：必须仍是 "/"，而不是被吃掉后的空串
             assertThat(path).isEqualTo("/");
         }
 
@@ -174,10 +158,6 @@ class StaticResourceControllerTest {
             assertThat(path).isNull();
         }
     }
-
-    // ==================================================================
-    // 二、端到端 HTTP 行为 —— 通过 MockMvc 验证状态码与内容
-    // ==================================================================
 
     @Nested
     @DisplayName("HTTP 响应行为")
@@ -245,10 +225,6 @@ class StaticResourceControllerTest {
         }
     }
 
-    // ==================================================================
-    // 三、安全 —— 路径穿越防护
-    // ==================================================================
-
     @Nested
     @DisplayName("路径穿越防护")
     class PathTraversal {
@@ -258,8 +234,7 @@ class StaticResourceControllerTest {
         @Test
         @DisplayName("越权访问预览根目录之外的文件应被拒绝，绝不能返回其内容")
         void shouldBlockTraversalToOutsideFile() throws Exception {
-            // 使用 URL 编码的 ../，避免 MockMvc 在分发前对 URI 做规范化，
-            // 从而让请求真正抵达控制器，检验 canonicalPath 校验是否生效
+            // 用 URL 编码的 ../ 避免 MockMvc 预处理规范化，让请求真正抵达控制器检验 canonicalPath 校验
             mockMvc.perform(get("/static/" + DEPLOY_KEY + "/%2e%2e/" + SECRET_FILE))
                     .andExpect(status().is4xxClientError())
                     .andExpect(content().string(org.hamcrest.Matchers.not(
@@ -278,17 +253,12 @@ class StaticResourceControllerTest {
         @Test
         @DisplayName("URI 被规范化后绝不能泄露预览根目录之外的文件内容")
         void shouldNotLeakOutsideFileWhenNormalized() throws Exception {
-            // MockMvc 会把 ../ 规范化掉，此时路径里不再含原 deployKey。
-            // 唯一必须保证的是：根目录之外的文件内容绝不能被返回。
+            // MockMvc 会把 ../ 规范化，路径不再含 deployKey，只需保证越权文件内容不被返回
             mockMvc.perform(get("/static/" + DEPLOY_KEY + "/../" + SECRET_FILE))
                     .andExpect(content().string(org.hamcrest.Matchers.not(
                             org.hamcrest.Matchers.containsString("should-not-be-served"))));
         }
     }
-
-    // ==================================================================
-    // 四、内容类型映射
-    // ==================================================================
 
     @Test
     @DisplayName("常见扩展名应映射到正确 Content-Type")
@@ -303,11 +273,7 @@ class StaticResourceControllerTest {
     @DisplayName("Content-Type 映射（Vue 构建产物必需类型）")
     class ContentTypeMapping {
 
-        /**
-         * 历史问题：早期只覆盖 html/css/js/png/jpg，其余一律 application/octet-stream。
-         * Vue 构建产物带的 svg/woff2/json 一旦被标为 octet-stream，浏览器会拒绝按类型加载，
-         * 表现为字体不生效、SVG 图挂掉、sourcemap 报错。
-         */
+        /** Vue 构建产物含 svg/woff2/json，标为 octet-stream 会被浏览器拒绝按类型加载 */
         @Test
         @DisplayName("构建产物常见资源类型必须被正确识别")
         void shouldMapAssetTypes() {

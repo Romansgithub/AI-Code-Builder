@@ -72,11 +72,9 @@ export async function updateAppByAdmin(
 }
 
 /**
- * 发起代码生成（POST）。
- *
- * <p>只负责「把任务启动起来」并返回回执，不承载进度流 ——
- * 进度由 GET /app/chat/gen/stream 独立订阅。这样连接断开不会波及生成，
- * 浏览器也不会像对待 GET 那样自动重放这个写请求。</p>
+ * 发起代码生成（POST），只返回回执，不承载进度流。
+ * 进度由 GET /app/chat/gen/stream 独立订阅：连接断开不波及生成，
+ * 浏览器也不会自动重放这个写请求。
  */
 export async function generateCode(
   body: API.GenerateCodeRequest,
@@ -93,11 +91,8 @@ export async function generateCode(
 }
 
 /**
- * 查询生成任务状态。
- *
- * <p>用于页面刷新后恢复现场：刷新会丢掉 lastEventId 与内存里的进度，
- * 只能先问一句「这个应用现在到底在不在生成」，
- * 避免用户在不知情的情况下再点一次、误触第二次生成。</p>
+ * 查询生成任务状态，用于页面刷新后恢复现场。
+ * 刷新会丢掉 lastEventId 与内存进度，不查一次可能导致用户重复触发生成。
  */
 export async function getGenStatus(
   params: { appId: number },

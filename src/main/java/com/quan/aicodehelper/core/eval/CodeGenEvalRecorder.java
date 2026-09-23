@@ -13,35 +13,23 @@ import java.time.LocalDateTime;
 import java.util.Collection;
 
 /**
- * 代码生成质量指标采集器。
+ * 代码生成质量指标采集器：把每次生成的质量数据旁路落库，供事后统计。
  *
- * <p><b>定位</b>：这是旁路逻辑，负责把每次生成的质量数据落库，
- * 用于事后统计「一次通过率 / 自愈成功率 / 失败原因分布」。</p>
- *
- * <p><b>核心约束</b>：采集失败绝不能影响生成主流程。
- * 写库异常只记日志并吞掉 —— 用户关心的是拿到代码，
- * 而不是平台的统计表是否完整。</p>
- *
- * <p>所有方法均为「永不抛出」语义。</p>
+ * <p>采集失败绝不能影响生成主流程：写库异常只记日志并吞掉，所有方法均为「永不抛出」语义。
+ * 用户关心的是拿到代码，而不是平台的统计表是否完整。</p>
  */
 @Slf4j
 @Service
 public class CodeGenEvalRecorder {
 
-    /**
-     * 失败原因在库中的截断长度，避免超长报错撑大表。
-     */
+    /** 失败原因在库中的截断长度，避免超长报错撑大表 */
     private static final int FAILURE_MESSAGE_MAX_LENGTH = 1000;
 
     @Resource
     private CodeGenEvalRecordMapper evalRecordMapper;
 
     /**
-     * 记录一次生成的质量指标。
-     *
-     * <p>永不抛异常。</p>
-     *
-     * @param metric 指标数据
+     * 记录一次生成的质量指标。永不抛异常。
      */
     public void record(GenerationMetric metric) {
         if (metric == null) {
@@ -83,9 +71,7 @@ public class CodeGenEvalRecorder {
     }
 
     /**
-     * 统计产物规模（文件数与总字节数）。
-     *
-     * <p>用于评估「生成的代码量」这一维度，失败时返回 null 而非抛异常。</p>
+     * 统计产物规模（文件数与总字节数），永不抛异常。
      *
      * @param outputDir 产物目录，可为 null
      * @return 长度为 2 的数组 [文件数, 总字节数]，目录无效时返回 [0, 0]

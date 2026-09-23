@@ -14,20 +14,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Vue 项目构建器。
- *
- * <p>相比早期实现的三点关键改进：</p>
- * <ol>
- *   <li><b>收集输出</b>：原实现把子进程输出直接打到日志，调用方拿不到报错文本，无法据此修复。
- *       现在统一收集进 {@link BuildResult}。</li>
- *   <li><b>区分失败类型</b>：依赖装不上（环境问题）与代码编译失败（代码问题）必须分开，
- *       前者重试无意义。见 {@link BuildFailureTypeEnum}。</li>
- *   <li><b>依赖复用</b>：{@code package.json} 未变且 {@code node_modules} 已存在时跳过
- *       {@code npm install}。原实现每次构建都重装依赖，一次最长等 300 秒，
- *       自愈循环若照此重试会让用户等到天荒地老。</li>
- * </ol>
- */
+/** Vue 项目构建器：收集子进程输出、区分失败类型，并在 package.json 未变时跳过 npm install。 */
 @Slf4j
 @Component
 public class VueProjectBuilder {
@@ -42,12 +29,6 @@ public class VueProjectBuilder {
     private BuilderProperties builderProperties;
 
     /**
-     * 执行命令并收集输出。
-     *
-     * @param workingDir     工作目录
-     * @param command        命令
-     * @param timeoutSeconds 超时时间
-     * @param outputHolder   输出收集容器（stdout 与 stderr 合并按序写入）
      * @return 退出码；-1 表示超时或异常
      */
     private int executeCommand(File workingDir, String command, int timeoutSeconds, StringBuilder outputHolder) {
@@ -85,9 +66,6 @@ public class VueProjectBuilder {
         }
     }
 
-    /**
-     * 读取子进程的一个输出流并写入收集器。
-     */
     private void collectStream(Process process, StringBuilder outputHolder, boolean isError) {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                 isError ? process.getErrorStream() : process.getInputStream(), StandardCharsets.UTF_8))) {
@@ -109,12 +87,7 @@ public class VueProjectBuilder {
         sb.append(text);
     }
 
-    /**
-     * 判断是否需要重新安装依赖。
-     *
-     * <p>依赖是否过期由「{@code package.json} 的修改时间晚于 {@code node_modules} 目录」判定。
-     * 这是个近似判断，但足以覆盖「同一项目反复构建」这一主要场景。</p>
-     */
+    /** 按「package.json 修改时间晚于 node_modules」近似判定依赖是否过期，足以覆盖反复构建的主要场景。 */
     private boolean shouldInstallDependencies(File projectDir) {
         File nodeModules = new File(projectDir, "node_modules");
         if (!nodeModules.exists() || !nodeModules.isDirectory()) {
@@ -139,9 +112,7 @@ public class VueProjectBuilder {
         return System.getProperty("os.name").toLowerCase().contains("windows");
     }
 
-    /**
-     * 拼出可执行命令名（Windows 下需要 .cmd 后缀）。
-     */
+    /** Windows 下 npm 需要 .cmd 后缀。 */
     private String resolveExecutable(String baseCommand) {
         if (isWindows()) {
             return baseCommand + ".cmd";
@@ -149,14 +120,7 @@ public class VueProjectBuilder {
         return baseCommand;
     }
 
-    /**
-     * 拼出 npm 依赖源参数（形如 {@code  --registry=https://...}），供 {@code npm install} 使用。
-     *
-     * <p><b>只在安装了依赖时用得上</b>：{@code npm run build} 不下载包，故不追加，
-     * 免得把一个与本步无关的参数混进命令里。</p>
-     *
-     * <p>配置留空时返回空串，命令与原实现逐字一致 —— 不配镜像就不改变任何行为。</p>
-     */
+    /** 仅安装依赖时追加；npm run build 不下载包，不需要 registry 参数。 */
     private String npmRegistryArg() {
         String registry = builderProperties == null ? null : builderProperties.getNpmRegistry();
         if (registry == null || registry.isBlank()) {
@@ -165,27 +129,11 @@ public class VueProjectBuilder {
         return " --registry=" + registry;
     }
 
-    // ==================================================================
-    // 对外接口
-    // ==================================================================
-
-    /**
-     * 构建 Vue 项目，返回结构化结果。
-     *
-     * @param projectPath 项目目录
-     * @return 构建结果（含失败类型与错误信息）
-     */
     public BuildResult buildProjectWithResult(String projectPath) {
         return buildProjectWithResult(projectPath, null);
     }
 
-    /**
-     * 构建 Vue 项目，返回结构化结果，并把关键进度推送给前端。
-     *
-     * @param projectPath 项目目录
-     * @param appId       应用 ID，用于推送进度；可为 null
-     * @return 构建结果
-     */
+    /** @param appId 用于推送进度，可为 null（不推送） */
     public BuildResult buildProjectWithResult(String projectPath, Long appId) {
         File projectDir = new File(projectPath);
         if (!projectDir.exists() || !projectDir.isDirectory()) {
@@ -203,7 +151,6 @@ public class VueProjectBuilder {
         log.info("开始构建 Vue 项目：{}", projectPath);
         StringBuilder output = new StringBuilder();
 
-        // ---- 阶段一：依赖安装 ----
         if (shouldInstallDependencies(projectDir)) {
             emit(appId, "正在安装项目依赖...");
             String installCommand = resolveExecutable("npm") + " install" + npmRegistryArg();
@@ -219,7 +166,6 @@ public class VueProjectBuilder {
             }
         }
 
-        // ---- 阶段二：构建 ----
         emit(appId, "正在构建项目...");
         String buildCommand = resolveExecutable("npm") + " run build";
         int buildExit = executeCommand(projectDir, buildCommand, NPM_BUILD_TIMEOUT_SECONDS, output);
@@ -233,7 +179,6 @@ public class VueProjectBuilder {
                     error, output.toString());
         }
 
-        // ---- 阶段三：校验产物 ----
         File distDir = new File(projectDir, "dist");
         if (!distDir.exists() || !distDir.isDirectory()) {
             log.error("dist 目录不存在：{}", distDir.getAbsolutePath());
@@ -252,8 +197,6 @@ public class VueProjectBuilder {
     }
 
     /**
-     * 构建 Vue 项目（兼容旧签名）。
-     *
      * @deprecated 改用 {@link #buildProjectWithResult(String)} 以获取失败原因。
      */
     @Deprecated
@@ -261,9 +204,6 @@ public class VueProjectBuilder {
         return buildProjectWithResult(projectPath).isSuccess();
     }
 
-    /**
-     * 异步构建 Vue 项目。
-     */
     public void buildProjectAsync(String projectPath) {
         Thread.ofVirtual().name("vue-builder-" + System.currentTimeMillis()).start(() -> {
             try {

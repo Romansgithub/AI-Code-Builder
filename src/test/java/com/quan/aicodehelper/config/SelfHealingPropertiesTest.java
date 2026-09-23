@@ -6,10 +6,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 构建自愈配置测试。
- *
- * <p>重点是边界值的兜底行为：非法配置不能让自愈循环失控
- * （比如负数轮次、零长度限制）。</p>
+ * 构建自愈配置测试：重点锁死边界值兜底，非法配置不能让自愈循环失控。
  */
 @DisplayName("构建自愈配置")
 class SelfHealingPropertiesTest {

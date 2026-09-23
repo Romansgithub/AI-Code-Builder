@@ -15,12 +15,8 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 工程目录扫描测试。
- *
- * <p>这个类测的其实是「闸门」而不是「遍历」。过滤一旦失效，后果不是慢一点：
- * 索引到 {@code node_modules} 会让片段量从几百涨到几万，
- * 第三方库代码挤满 Top-K，<b>检索质量直接崩塌</b>，而且还会按量烧掉向量化额度。
- * 所以每个排除规则都得有测试盯着。</p>
+ * 工程目录扫描测试。测的是「闸门」而不是「遍历」：过滤失效会让 {@code node_modules}
+ * 被索引，片段量从几百涨到几万，第三方库代码挤满 Top-K，检索质量崩塌并烧掉向量化额度。
  */
 @DisplayName("工程目录扫描")
 class CodeFileScannerTest {
@@ -183,8 +179,7 @@ class CodeFileScannerTest {
 
     private void write(String relativePath, String content) throws IOException {
         Path target = root.resolve(relativePath);
-        // 必须自己建父目录：Files.writeString 不会创建缺失的上级目录，
-        // 否则写入直接抛 NoSuchFileException
+        // Files.writeString 不会创建缺失的上级目录，不建父目录会抛 NoSuchFileException
         Files.createDirectories(target.getParent());
         Files.writeString(target, content, StandardCharsets.UTF_8);
     }

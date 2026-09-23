@@ -18,18 +18,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 本地依赖自检测试。
- *
- * <p><b>为什么必须用真端口而不是 mock 掉探测</b>：这个类的价值全在「端口能否
- * 连上」这一个判断上。若把 {@code isPortListening} mock 掉，测试就只是在验证
- * 自己的 if/else，真实的连接超时、IPv4 绑定、端口占用这些行为一个都测不到。
- * 所以这里用 {@link ServerSocket} 真起一个监听来代表「服务已就绪」，
- * 端口填 0 让操作系统分配 —— 避免固定端口在别的机器上恰好被占用导致假失败。</p>
- *
- * <p><b>为什么启动命令要指向临时文件</b>：默认配置里的
- * {@code D:\Redis\start-redis.bat} 是开发机的路径，写死在测试里换台机器就红。
- * 所以每个用例都自己造临时脚本（或指向一个不存在的路径），
- * 只验证「命令是否存在」这一层判断。</p>
+ * 本地依赖自检测试：用真端口而不是 mock 探测，启动命令一律指向临时脚本。
+ * mock 掉 {@code isPortListening} 就只是在验证自己的 if/else；默认配置里的开发机路径换台机器就红。
  */
 @DisplayName("本地依赖自检")
 class LocalServiceCheckerTest {
@@ -44,18 +34,14 @@ class LocalServiceCheckerTest {
         checker = new LocalServiceChecker(props);
     }
 
-    /**
-     * 起一个真监听，返回端口号。用 try-with-resources 关掉即可释放。
-     */
+    /** 起一个真监听并返回端口号，由调用方 try-with-resources 释放 */
     private static ServerSocket listeningSocket() throws IOException {
         ServerSocket socket = new ServerSocket(0);
         socket.setReuseAddress(true);
         return socket;
     }
 
-    /**
-     * 造一个临时的「启动脚本」文件，避免依赖开发机上的真实路径。
-     */
+    /** 造一个临时的「启动脚本」，避免依赖开发机上的真实路径 */
     private static String tempScript(String name) throws IOException {
         Path dir = Files.createTempDirectory("local-svc-test");
         Path file = dir.resolve(name);
@@ -85,8 +71,7 @@ class LocalServiceCheckerTest {
             try (ServerSocket socket = listeningSocket()) {
                 port = socket.getLocalPort();
             }
-            // 上面已关闭，这个端口此刻无人监听。
-            // 关键：返回 false 而不是抛异常 —— 探测的可预期性比速度重要。
+            // 端口已关闭；关键是返回 false 而不是抛异常，探测的可预期性比速度重要
             assertThat(checker.isPortListening("127.0.0.1", port)).isFalse();
         }
 
@@ -121,8 +106,7 @@ class LocalServiceCheckerTest {
         @Test
         @DisplayName("重复启动是有害的：已就绪时必须跳过，不能再去执行启动命令")
         void shouldNotStartWhenAlreadyReady() throws IOException {
-            // 造一个「一旦被执行就会留下痕迹」的脚本，用它证明没被执行。
-            // 比 mock 更强：直接验证真实的进程启动路径没被走到。
+            // 造一个「被执行就留下痕迹」的脚本，比 mock 更强：直接验证真实的进程启动路径没被走到
             Path marker = Files.createTempDirectory("local-svc-marker").resolve("started.txt");
             String script = tempScript("loop.bat");
             Files.writeString(Path.of(script),
@@ -150,9 +134,7 @@ class LocalServiceCheckerTest {
     @DisplayName("缺失时的处理")
     class Missing {
 
-        /**
-         * 取一个确定无人监听的端口。
-         */
+        /** 取一个确定无人监听的端口 */
         private int freePort() throws IOException {
             try (ServerSocket socket = listeningSocket()) {
                 return socket.getLocalPort();
@@ -243,7 +225,7 @@ class LocalServiceCheckerTest {
         void shouldSkipWhenDisabled() throws IOException {
             try (ServerSocket socket = listeningSocket()) {
                 props.setEnabled(false);
-                // 即使端口是通的，也不该去探 —— 关掉开关就是完全不介入
+                // 即使端口是通的也不该去探，关掉开关就是完全不介入
                 props.getRedis().setPort(socket.getLocalPort());
                 assertThat(props.isRedisCheckActive()).isFalse();
                 checker.checkAll();

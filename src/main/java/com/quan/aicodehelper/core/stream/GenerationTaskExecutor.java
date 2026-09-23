@@ -13,20 +13,8 @@ import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 生成任务的执行器：让「生成」脱离 HTTP 请求的生命周期。
- *
- * <p><b>为什么必须这么做</b>：原先生成流的订阅发生在 HTTP 响应组装过程中，
- * 于是连接一断，Reactor 序列就被取消，AI 调用随之中止。
- * 用户视角是「网络抖了一下，生成白跑了」；服务端视角是「用户没收到，但 token 已经烧了」。
- * 更糟的是浏览器会带着同一个 URL 自动重连，于是又跑一遍。</p>
- *
- * <p><b>现在的做法</b>：在独立虚拟线程里订阅生成流并消费到底 ——
- * 内容的组装、落盘、对话历史写入全部在里面完成，与有没有人在听无关。
- * 订阅返回的 {@link Disposable} 挂到任务现场上，供「主动放弃」场景使用，
- * 而不是供断线使用。</p>
- *
- * <p><b>为什么用虚拟线程</b>：一次 Vue 工程生成可能持续十几分钟且几乎全程在等 IO（模型返回、npm 构建）。
- * 平台线程被这样长期占用会拖垮线程池，虚拟线程则几乎零成本。</p>
+ * 生成任务的执行器：让「生成」脱离 HTTP 请求生命周期，在独立虚拟线程里消费到底，与有无订阅者无关。
+ * 用虚拟线程承接可能持续十几分钟的 IO 密集任务，避免长时间占用平台线程拖垮线程池。
  */
 @Slf4j
 @Component
@@ -39,13 +27,8 @@ public class GenerationTaskExecutor {
     private SseProperties sseProperties;
 
     /**
-     * 启动一个生成任务。
-     *
-     * <p>任务的终态一定会在某个出口被推进：正常结束、异常、看门狗超时三条路各有一处
-     * {@code finishTask}。任何一条漏掉，前端都会挂到连接超时为止。</p>
-     *
-     * @param task     已抢占成功的任务现场
-     * @param stream   生成流（由 service 层提供，本类不做业务决策）
+     * 启动一个生成任务（task 须已抢占成功）。终态一定在某一出口被推进：
+     * 正常结束、异常、看门狗超时各有一处 finishTask，漏掉任何一个前端都会挂到连接超时。
      */
     public void start(GenerationTask task, Flux<String> stream) {
         Long appId = task.getAppId();
@@ -56,8 +39,7 @@ public class GenerationTaskExecutor {
                 .unstarted(() -> {
                     try {
                         Disposable subscription = stream
-                                // 业务层已负责落盘与历史写入，这里只做「消耗到底 + 上报终态」。
-                                // 不收集内容：既省内存，也避免在响应式回调里做业务判断。
+                                // 业务层负责落盘；这里只消耗到底并上报终态，不收集内容（省内存，也不在响应式回调里做业务判断）
                                 .doOnError(e -> {
                                     log.error("应用 {} 的生成流异常：{}", appId, e.getMessage(), e);
                                     if (finished.compareAndSet(false, true)) {
@@ -74,8 +56,7 @@ public class GenerationTaskExecutor {
                                             }
                                         });
                         task.bindSubscription(subscription);
-                        // 订阅是异步的，立刻返回；真正的等待发生在 Reactor 的调度线程上。
-                        // 因此这个虚拟线程在这里就结束了，不会为每个任务常驻一个线程。
+                        // 订阅是异步的，立刻返回，真正的等待在 Reactor 的调度线程上，故本虚拟线程随即结束
                     } catch (Exception e) {
                         log.error("应用 {} 启动生成任务失败：{}", appId, e.getMessage(), e);
                         if (finished.compareAndSet(false, true)) {
@@ -87,12 +68,8 @@ public class GenerationTaskExecutor {
     }
 
     /**
-     * 看门狗：把跑到一半没了消息的任务收尾。
-     *
-     * <p>Reactor 的 timeout 只能管到「流内两次事件之间的间隔」，管不到
-     * 「生成线程自己卡死或静默退出」这种情况。没有兜底的话，
-     * 任务会长期停在 RUNNING，后续所有生成请求都被幂等保护挡住，
-     * 用户彻底无法使用该应用 —— 这是比「报错」严重得多的事故形态。</p>
+     * 看门狗：收尾跑到一半没消息的任务。Reactor 的 timeout 管不到「生成线程卡死或静默退出」，
+     * 漏掉兜底会让任务长期停在 RUNNING，后续生成全被幂等保护挡住，用户彻底无法使用。
      */
     @Scheduled(fixedDelay = 60_000L)
     public void watchdogCheck() {

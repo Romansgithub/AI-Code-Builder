@@ -27,35 +27,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
- * 工程代码索引服务：把磁盘上的工程代码变成可检索的向量片段。
- *
- * <p><b>两条触发路径</b>：</p>
- * <ol>
- *   <li>{@link #indexAfterGeneration} —— 生成完成后的<b>异步预热</b>。
- *       把「第一次迭代要现场向量化整个工程」的等待，挪到用户还在看生成结果的那几秒里；</li>
- *   <li>{@link #ensureIndexed} —— 检索前的<b>兜底</b>，只在「这个应用一条索引都没有」时
- *       才会被真正调用（见 {@link #hasIndex}）。这样常规迭代路径上零额外开销，
- *       而预热失败（额度耗尽、服务抖动）也不会让检索永久失效 ——
- *       下一次迭代会重新尝试，属于自愈。</li>
- * </ol>
- *
- * <p><b>增量而不是全量</b>：以「文件摘要」为单位比对。按文件比而不是按片段比，
- * 是因为一个文件的改动会连带移动后面所有片段的行号 —— 逐片段比对会把
- * 整个文件判成「全变了」，增量就退化成全量。</p>
- *
- * <p><b>永不抛出</b>：索引是检索增强的派生数据，它失败的正确后果是
- * 「这一轮没有检索增强」，而不是「用户拿不到代码」。所以对外方法全部
- * 自行兜底，与评测埋点同样的原则。</p>
+ * 工程代码索引服务：把磁盘工程代码变成可检索的向量片段。两条触发路径（生成后异步预热 + 检索前兜底）；
+ * 按文件摘要做增量比对；索引是派生数据，失败则降级、永不抛出。
  */
 @Slf4j
 @Service
 public class CodeIndexService {
 
-    /**
-     * 正在索引中的应用。用来防止「生成完成触发的异步索引」与
-     * 「检索前的兜底索引」同时跑同一个应用 —— 两者会重复切块、
-     * 重复向量化（等于重复花钱），还会在删除/插入之间互相踩踏。
-     */
+    /** 正在索引中的应用，避免异步预热与检索兜底同时索引同一应用（重复向量化、互相踩踏）。 */
     private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
 
     @Resource
@@ -67,37 +46,21 @@ public class CodeIndexService {
     @Resource
     private EmbeddingClient embeddingClient;
 
-    /**
-     * 连续向量化失败多少次就放弃本轮。
-     *
-     * <p>第一次失败可能是偶发，继续下一个文件；但连续失败通常意味着
-     * 服务不可用或凭证失效 —— 此时对剩余每个文件都重试一遍，
-     * 只会把「一次失败」放大成「几十次失败 + 一分钟等待」。</p>
-     */
+    /** 连续向量化失败达到此值即放弃本轮：连续失败通常是服务不可用或凭证失效，不必逐个重试放大开销。 */
     private static final int MAX_CONSECUTIVE_EMBED_FAILURES = 2;
 
     /**
-     * 工程产物目录：{@code {code-output-root}/{codeGenType}_{appId}}。
-     *
-     * <p>每次调用都重新取根目录，不能缓存成常量 —— 评测跑批期间
-     * 产物根会被临时切换（见 {@code EvalRunner}），固化的路径会指错地方。</p>
+     * 工程产物目录：{@code {code-output-root}/{codeGenType}_{appId}}；每次重新取根目录而非缓存，因为评测跑批期间产物根会被临时切换。
      */
     public static Path projectDir(CodeGenTypeEnum type, long appId) {
         return Paths.get(AppConstant.getCodeOutputRootDir(), type.getValue() + "_" + appId);
     }
 
-    /**
-     * 生成完成后的异步预热索引。
-     *
-     * @param appId 应用 id
-     * @param type  代码生成类型
-     */
     public void indexAfterGeneration(long appId, CodeGenTypeEnum type) {
         if (!ragProperties.isEnabled() || !ragProperties.isIndexOnComplete()) {
             return;
         }
-        // 评测跑批用的是负数 appId 且产物写到独立目录，索引它毫无意义
-        // 还会白烧向量化额度，故直接跳过
+        // 评测用负数 appId 且产物写到独立目录，索引无意义且白烧额度，直接跳过
         if (appId <= 0 || type == null || EvalScope.isActive()) {
             return;
         }
@@ -105,15 +68,13 @@ public class CodeIndexService {
             try {
                 ensureIndexed(appId, type);
             } catch (Exception e) {
-                // 虚拟线程内抛出的异常无人接收，会被静默吞掉 —— 必须在这里兜住
+                // 虚拟线程内异常无人接收会被静默吞掉，必须在此兜住
                 log.warn("应用 {} 的异步索引任务异常：{}", appId, e.getMessage());
             }
         });
     }
 
-    /**
-     * 建立或刷新索引（同步）。永不抛出。
-     */
+    /** 建立或刷新索引（同步），永不抛出。 */
     public void ensureIndexed(long appId, CodeGenTypeEnum type) {
         if (!ragProperties.isEnabled() || appId <= 0 || type == null) {
             return;
@@ -131,9 +92,6 @@ public class CodeIndexService {
         }
     }
 
-    /**
-     * 该应用的片段总数，供观测与排查使用。
-     */
     public long countChunks(long appId) {
         try {
             return codeChunkMapper.selectCountByQuery(QueryWrapper.create().eq("appId", appId));
@@ -216,9 +174,7 @@ public class CodeIndexService {
                 }
             }
 
-            // 先删后插：同一 (appId, filePath, chunkIndex) 上有唯一索引，
-            // 反过来做会撞唯一键。删插之间若中断，留下的只是「该文件暂时搜不到」，
-            // 下一次索引会重新补上 —— 派生数据允许这种中间态。
+            // 先删后插：同一 (appId, filePath, chunkIndex) 有唯一索引，反过来会撞键；中断只留「该文件暂时搜不到」，派生数据允许。
             deleteFileChunks(appId, file.relativePath());
             List<CodeChunk> rows = buildRows(appId, type, slices, vectors, currentModel);
             for (CodeChunk row : rows) {
@@ -234,11 +190,7 @@ public class CodeIndexService {
                 System.currentTimeMillis() - startedAt);
     }
 
-    /**
-     * 清理磁盘上已不存在（或被删除）的文件的片段。
-     *
-     * @return 清理掉的文件数
-     */
+    /** 清理磁盘上已删除文件的片段。@return 清理掉的文件数 */
     private int purgeDeletedFiles(long appId, Set<String> indexedPaths, Set<String> currentPaths) {
         int removed = 0;
         for (String path : indexedPaths) {
@@ -251,17 +203,7 @@ public class CodeIndexService {
     }
 
     /**
-     * 判断某个文件是否需要（重新）切块与向量化。
-     *
-     * <p>三种情形都要重算：</p>
-     * <ol>
-     *   <li><b>文件内容变了</b>（摘要不同）—— 常规情况；</li>
-     *   <li><b>embedding 模型换了</b> —— 不同模型的向量不在同一语义空间，
-     *       混着算余弦得出的相似度毫无意义，而且不会报错，只会静默给出错误排序；</li>
-     *   <li><b>存在没有向量的片段</b> —— 上一次向量化失败（额度耗尽、服务抖动）。
-     *       不补这一步，失败的片段会被「摘要相同」永久判定为已索引，
-     *       从此只能被关键词检索到，而且没人会注意到。</li>
-     * </ol>
+     * 判断某文件是否需重新切块/向量化：内容变了、embedding 模型换了（不同模型向量不共线，混算余弦会无声出错），或存在无向量的片段（上次失败遗留，不补则永久只能关键词召回）。
      */
     private boolean needsIndex(List<CodeChunk> existing, CodeFileScanner.SourceFile file,
                               String currentModel) {
@@ -309,8 +251,7 @@ public class CodeIndexService {
                     .symbols(slice.symbols())
                     .embedding(VectorCodec.encode(vector))
                     .dim(vector == null ? null : vector.length)
-                    // 向量缺失时刻意连模型名一起留空：否则下次增量比对会误认为
-                    // 「这个片段的向量是最新模型产出的」，永远不去补它
+                    // 向量缺失时连模型名一起留空，否则增量比对会误认「向量是最新模型产出」而永不补它
                     .embeddingModel(vector == null ? null : currentModel)
                     .createTime(now)
                     .updateTime(now)

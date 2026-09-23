@@ -15,19 +15,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 评测报告服务。
+ * 评测报告服务：把 SQL 聚合的原始行转成带比率的视图对象。
  *
- * <p>把 SQL 聚合的原始行转成带比率的视图对象。比率统一在这里算：
- * SQL 里算百分比要处理除零，且不同数据库行为不一致（MySQL 返回 NULL、
- * H2 可能报错），放到 Java 里更可控、也更好测。</p>
+ * <p>比率统一在 Java 里算：SQL 里算百分比要处理除零，且 MySQL 返回 NULL、H2 可能报错，放 Java 更可控也好测。</p>
  */
 @Slf4j
 @Service
 public class EvalReportService {
 
-    /**
-     * 失败原因最多返回多少条，防止低频类型把报告刷屏。
-     */
+    /** 失败原因最多返回多少条，防止低频类型把报告刷屏。 */
     private static final int FAILURE_LIMIT = 20;
 
     @Resource
@@ -36,9 +32,7 @@ public class EvalReportService {
     /**
      * 生成评测报告。
      *
-     * @param sinceDays 统计最近多少天，null 或 &lt;=0 表示全量
-     * @param batchId   批次标识，可为 null
-     * @return 报告
+     * @param sinceDays 统计最近多少天，null 或 &lt;=0 表示全量；batchId 为 null 表示全部批次
      */
     public EvalReportVO buildReport(Integer sinceDays, String batchId) {
         LocalDateTime since = (sinceDays == null || sinceDays <= 0)
@@ -136,9 +130,7 @@ public class EvalReportService {
         return list;
     }
 
-    /**
-     * 百分率，保留一位小数。分母为 0 时返回 0。
-     */
+    /** 百分率，保留一位小数；分母为 0 时返回 0。 */
     static double rate(long numerator, long denominator) {
         if (denominator <= 0) {
             return 0.0;
@@ -147,10 +139,8 @@ public class EvalReportService {
     }
 
     /**
-     * 分母为 0 时返回 null，语义是「没有数据」而不是「0%」。
-     *
-     * <p>这个区分很重要：自愈成功率的 0% 和「从未触发过自愈」是两件事，
-     * 混在一起会得出「自愈完全没用」的错误结论。</p>
+     * 分母为 0 时返回 null，语义是「没有数据」而不是「0%」：自愈成功率的 0% 与「从未触发过自愈」
+     * 是两件事，混在一起会得出「自愈完全没用」的错误结论。
      */
     static Double nullableRate(long numerator, long denominator) {
         return denominator <= 0 ? null : rate(numerator, denominator);
@@ -179,9 +169,7 @@ public class EvalReportService {
         return v == null ? null : v.toString();
     }
 
-    /**
-     * 生成类型 value 转中文名，未知值原样返回便于发现新增类型未登记。
-     */
+    /** 生成类型 value 转中文名，未知值原样返回，便于发现未登记的新类型。 */
     static String typeText(String value) {
         if (value == null) {
             return null;
@@ -190,9 +178,7 @@ public class EvalReportService {
         return e == null ? value : e.getText();
     }
 
-    /**
-     * 失败类型枚举名转中文描述。
-     */
+    /** 失败类型枚举名转中文描述，未知值原样返回。 */
     static String failureText(String name) {
         if (name == null) {
             return null;

@@ -9,11 +9,6 @@ public class HtmlCodeParser implements CodeParser<HtmlCodeResult> {
 
     private static final Pattern HTML_CODE_PATTERN = Pattern.compile("```html\\n([\\s\\S]*?)```", Pattern.CASE_INSENSITIVE);
 
-    /**
-     * 解析HTML单文件代码
-     * @param codeContent
-     * @return
-     */
     @Override
     public HtmlCodeResult parseCode(String codeContent) {
         HtmlCodeResult result = new HtmlCodeResult();
@@ -27,12 +22,6 @@ public class HtmlCodeParser implements CodeParser<HtmlCodeResult> {
         return result;
     }
 
-    /**
-     * 根据正则表达式提取代码
-     * @param content
-     * @param pattern
-     * @return
-     */
     private static String extractCodeByPattern(String content, Pattern pattern) {
         Matcher matcher = pattern.matcher(content);
         if (matcher.find())

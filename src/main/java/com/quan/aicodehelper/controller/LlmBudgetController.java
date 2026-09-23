@@ -17,13 +17,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * LLM 调用预算 控制层。
- *
- * <p>限管理员：它反映的是平台的资源消耗情况，且重置操作会影响全局行为。</p>
- *
- * <p><b>为什么要暴露「查询」而不只是打日志</b>：额度耗尽时第一反应是
- * 「到底花了多少、还剩多少」，这个数字放在日志里要翻、会轮转，
- * 做成接口才能随时确认。</p>
+ * LLM 调用预算 控制层（限管理员：反映平台资源消耗，重置影响全局）。
  */
 @Slf4j
 @RestController
@@ -48,14 +42,8 @@ public class LlmBudgetController {
     }
 
     /**
-     * 重置调用计数。
-     *
-     * <p>存在的理由很实际：开发联调时额度用完了，重启服务要重新登录、
-     * 重新开应用，代价比按需重置大得多。有了这个接口，可以在不中断
-     * 服务的前提下继续联调。</p>
-     *
-     * <p><b>注意它是全局的</b>：重置的是整个进程的计数，
-     * 不只是当前用户。这在单实例、开发者自用的场景下是合理的简化。</p>
+     * 重置调用计数。为联调而存在：额度用完不必重启服务再重新登录；
+     * 重置的是整个进程的计数，不只当前用户。
      */
     @PostMapping("/reset")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)

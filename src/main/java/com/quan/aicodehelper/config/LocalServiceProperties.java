@@ -7,24 +7,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 /**
- * 本地基础服务依赖（Nginx / Redis）自检配置。
- *
- * <p><b>它解决什么问题</b>：本地开发依赖 Nginx（静态资源 + 反向代理）与 Redis
- * （会话 + 对话记忆），两者都要开机后手动拉起。忘了拉的症状很隐蔽 ——
- * 页面打得开但静态资源全 404、或者登录状态莫名其妙丢失，排查时往往先怀疑代码，
- * 实际是依赖没起。开机后第一次跑项目时顺手检查一下，比事后排查便宜得多。</p>
- *
- * <p><b>为什么默认只检查、不自动启动</b>：Nginx 默认监听 80 端口，在 Windows 上
- * 绑定这类特权端口需要管理员权限。本项目的 Maven 进程平时是非提权的，若为此
- * 要求整个项目以管理员身份运行，AI 生成的代码和 npm 构建脚本会全部继承管理员
- * 权限 —— 拿一个真实的权限提升风险去换一次复制粘贴，不划算。
- * 所以这里选择「检测 + 明确提示」，把启动动作留在用户手里。
- * 真想让项目自己拉起的，把 {@code auto-start} 设为 true 并以管理员身份运行。</p>
- *
- * <p><b>为什么检查与启动要能在同一台机器上共存</b>：端口检测天然幂等 ——
- * 服务已在跑就直接跳过。这一点很重要，因为 {@code nginx.exe} 重复执行 start
- * 会报 {@code [emerg] bind() failed} 并在日志里留一堆脏记录，而 Redis 重复启动
- * 可能抢占同一个 dump.rdb。宁可少做一步，也不要做出破坏性动作。</p>
+ * 本地基础服务依赖（Nginx / Redis）自检配置。忘拉依赖的症状很隐蔽（静态资源 404、登录态丢失），
+ * 排查时容易先怀疑代码。默认只检测不自动启动：Nginx 默认监听 80 端口，Windows 上绑定特权端口
+ * 需要管理员权限，而项目的 Maven 进程是非提权的，不该为省一次复制粘贴引入权限提升风险。
  */
 @Slf4j
 @Data
@@ -38,19 +23,13 @@ public class LocalServiceProperties {
     private boolean enabled = true;
 
     /**
-     * 检测到服务未运行时是否尝试自动启动。
-     *
-     * <p>默认 false，理由见类注释：Nginx 需要管理员权限，不该由项目代劳。
-     * 开启后仍需以管理员身份运行项目，否则启动会因权限不足而失败，
-     * 日志里会给出明确提示。</p>
+     * 检测到服务未运行时是否尝试自动启动。默认 false，理由见类注释；
+     * 开启后仍需以管理员身份运行项目，否则会因权限不足而失败。
      */
     private boolean autoStart = false;
 
     /**
-     * 检查失败（服务不可用且未自动启动）时是否阻止应用启动。
-     *
-     * <p>默认 false：Nginx 只影响静态资源预览，页面主体仍可正常使用，
-     * 因为一个可选依赖没起就把整个项目拦下来太重了。想要严格一些的可以改成 true。</p>
+     * 检查失败（服务不可用且未自动启动）时是否阻止应用启动。默认 false：Nginx 仅影响静态资源预览，为可选依赖拦下整体太重。
      */
     private boolean failFast = false;
 
@@ -69,9 +48,8 @@ public class LocalServiceProperties {
     private Nginx nginx = new Nginx();
 
     /**
-     * Redis 配置。host / port 刻意与 spring.data.redis 分开写 ——
-     * 后者从环境变量注入且可能是远端地址，而这里要探的是**本机**服务，
-     * 复用同一个值会在「Redis 配到远端」时得出错误结论。
+     * Redis 配置。host / port 与 spring.data.redis 分开写：后者可能是远端地址，
+     * 而这里要探的是本机服务，复用同一个值会在 Redis 配到远端时得出错误结论。
      */
     @Data
     public static class Redis {
@@ -83,17 +61,11 @@ public class LocalServiceProperties {
         private int port = 6379;
 
         /**
-         * 服务不可用时提示用户执行的命令。
-         *
-         * <p>写成配置而不是硬编码在代码里：安装路径因机器而异，
-         * 换台电脑不该改代码。</p>
+         * 服务不可用时提示用户执行的命令。写成配置而非硬编码，安装路径因机器而异。
          */
         private String startCommand = "D:\\Redis\\start-redis.bat";
     }
 
-    /**
-     * Nginx 配置。
-     */
     @Data
     public static class Nginx {
 
@@ -135,16 +107,10 @@ public class LocalServiceProperties {
         }
     }
 
-    /**
-     * Redis 检查是否生效。
-     */
     public boolean isRedisCheckActive() {
         return enabled && redis.isEnabled();
     }
 
-    /**
-     * Nginx 检查是否生效。
-     */
     public boolean isNginxCheckActive() {
         return enabled && nginx.isEnabled();
     }

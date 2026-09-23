@@ -18,68 +18,35 @@ import java.util.List;
  */
 public interface AppService extends IService<App> {
 
-    /**
-     * 获取查询条件
-     *
-     * @param appQueryRequest
-     * @return
-     */
+    /** 按查询请求拼查询条件。 */
     QueryWrapper getQueryWrapper(AppQueryRequest appQueryRequest);
 
     /**
-     * 发起一次代码生成。
+     * 发起一次代码生成，返回任务现场。
      *
-     * <p><b>为什么返回任务而不是事件流</b>：返回流意味着「生成的存活依赖本次调用的连接」，
-     * 连接一断生成就没了，用户重连还会把生成重跑一遍。
-     * 返回任务现场则把两者拆开 —— 生成由独立线程跑到头，
-     * 连接只是订阅者，来去都不影响结果。</p>
-     *
-     * <p>若该应用已有进行中的任务，直接返回那个任务的现场（调用方转为订阅），
-     * 而不是抛错或再启动一次生成。</p>
-     *
-     * @param appId     应用 ID
-     * @param message   用户消息
-     * @param loginUser 当前登录用户
-     * @return 任务现场
+     * <p>返回任务而非事件流：流的存活依赖本次连接，断线生成就没了，重连还会重跑一遍；返回任务现场则生成
+     * 由独立线程跑到头，连接只是订阅者。已有进行中任务时直接返回那个任务，不抛错也不重跑。</p>
      */
     GenerationTask startGeneration(Long appId, String message, User loginUser);
 
     /**
-     * 校验用户是否有权访问该应用。
-     *
-     * <p>订阅进度与查询状态这类「读」操作需要它：它们不像生成那样自带业务校验，
-     * 若漏掉就会变成「知道 appId 就能围观别人生成过程」。</p>
-     *
-     * @param appId     应用 ID
-     * @param loginUser 当前登录用户
+     * 校验用户是否有权访问该应用。订阅进度、查询状态这类读操作必须显式调用它，
+     * 漏掉就成了知道 appId 就能围观别人的生成过程。
      */
     void checkAppPermission(Long appId, User loginUser);
 
     Long createApp(AppAddRequest appAddRequest, User loginUser);
 
-    /**
-     * 部署应用
-     * @param appId
-     * @param loginUser
-     * @return
-     */
+    /** 部署应用，返回可访问的部署地址。 */
     String deployApp(Long appId, User loginUser);
 
     void generateAppScreenshotAsync(Long appId, String appDeployUrl);
 
     boolean removeById(Long appId);
 
-    /**
-     * 获取应用VO
-     * @param app
-     * @return
-     */
+    /** 转为应用视图对象。 */
     AppVO getAppVO(App app);
 
-    /**
-     * 获取应用VO列表
-     * @param appList
-     * @return
-     */
+    /** 批量转为应用视图对象。 */
     List<AppVO> getAppVOList(List<App> appList);
 }

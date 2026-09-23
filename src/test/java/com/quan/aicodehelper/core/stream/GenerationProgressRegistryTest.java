@@ -19,17 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 生成任务订阅中心测试。
- *
- * <p><b>这个类守的是本次改造的全部要害</b>。原先的三个故障在这里各有一组断言：</p>
- * <ol>
- *   <li><b>重连不得触发第二次生成</b> —— 通过「任务抢占只能成功一次」保证。
- *       这是最重要的一条：重复生成意味着重复烧 token、重复写文件。</li>
- *   <li><b>断线期间的事件在重连后必须能补发</b> —— 事件先进缓冲、再考虑有没有人听，
- *       顺序反了就必然丢事件。</li>
- *   <li><b>新连接的唤醒通道不得被旧连接清理误删</b> —— 旧实现用 put 覆盖 Sink，
- *       旧连接结束时会把新连接的 Sink 一并移除。</li>
- * </ol>
+ * 生成任务订阅中心测试：守的是重连不重复生成、断线可补发、新旧连接互不误杀。
  */
 @DisplayName("生成任务订阅中心")
 class GenerationProgressRegistryTest {
@@ -79,10 +69,6 @@ class GenerationProgressRegistryTest {
             }
         }
     }
-
-    // ==================================================================
-    // 一、幂等：重连不重复生成
-    // ==================================================================
 
     @Nested
     @DisplayName("任务唯一性（防重复生成）")
@@ -153,10 +139,6 @@ class GenerationProgressRegistryTest {
             assertThat(second.isRunning()).isTrue();
         }
     }
-
-    // ==================================================================
-    // 二、断线重连：补发错过的进度
-    // ==================================================================
 
     @Nested
     @DisplayName("断线重连补发")
@@ -258,10 +240,6 @@ class GenerationProgressRegistryTest {
         }
     }
 
-    // ==================================================================
-    // 三、新旧连接互不误杀（旧实现的真实 bug）
-    // ==================================================================
-
     @Nested
     @DisplayName("连接生命周期隔离")
     class ConnectionIsolation {
@@ -271,10 +249,8 @@ class GenerationProgressRegistryTest {
         void shouldNotEvictNewSinkWhenOldConnectionCloses() {
             GenerationTask task = registry.startTask(APP_ID);
 
-            // 旧连接订阅后立刻断开
             List<ServerSentEvent<String>> oldConnection = collect(registry.subscribe(APP_ID, 0L), 100);
 
-            // 新连接（用户重连）接管
             List<ServerSentEvent<String>> newConnection = new ArrayList<>();
             registry.subscribe(APP_ID, 0L).subscribe(newConnection::add);
             waitUntil(() -> true, 150, false);
@@ -297,7 +273,6 @@ class GenerationProgressRegistryTest {
         void shouldKeepTaskRunningAfterSubscriberLeaves() {
             GenerationTask task = registry.startTask(APP_ID);
 
-            // 有人订阅后断开
             collect(registry.subscribe(APP_ID, 0L), 100);
 
             assertThat(task.isRunning())
@@ -306,10 +281,6 @@ class GenerationProgressRegistryTest {
             assertThat(registry.getTask(APP_ID)).isSameAs(task);
         }
     }
-
-    // ==================================================================
-    // 四、终态与回收
-    // ==================================================================
 
     @Nested
     @DisplayName("终态与回收")
@@ -325,9 +296,7 @@ class GenerationProgressRegistryTest {
                     .as("已是终态，重复调用应返回 false").isFalse();
             assertThat(registry.finishTask(APP_ID, "另一个失败原因")).isFalse();
 
-            // 缓冲里只应出现一条 done。
-            // 这里不能对订阅流做 count().block()：任务已结束，订阅会补发 done 后正常 complete，
-            // 但 count 的完成时机依赖序列收尾，容易卡到超时。直接查缓冲更准也更稳。
+            // 直接查缓冲更稳：对结束后的订阅流做 count().block() 容易因序列收尾卡到超时
             List<ServerSentEvent<String>> events = collect(registry.subscribe(APP_ID, 0L), 200);
             long doneCount = events.stream().filter(e -> "done".equals(e.event())).count();
             assertThat(doneCount).as("终止事件重复下发会让前端预览反复刷新").isEqualTo(1);

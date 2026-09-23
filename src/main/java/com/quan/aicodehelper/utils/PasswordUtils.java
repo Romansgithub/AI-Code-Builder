@@ -9,47 +9,28 @@ import org.springframework.util.DigestUtils;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 密码加密与校验工具。
- *
- * <p><b>历史背景</b>：项目早期使用 {@code MD5 + 固定盐 "quan"} 存储密码。
- * MD5 速度快、盐值硬编码，一旦库被拖走可被彩虹表快速破解，属于必须修复的安全缺陷。
- * 现统一迁移至 BCrypt。</p>
- *
- * <p><b>渐进式迁移策略</b>：直接切换会导致存量用户的 MD5 密码全部无法登录。
- * 因此这里保留对旧格式的识别与校验能力：
- * <ol>
- *   <li>新注册 / 改密的用户，直接写入 BCrypt 哈希；</li>
- *   <li>老用户登录时，{@link #matches} 会先按 BCrypt 校验，失败再回退按 MD5 校验；</li>
- *   <li>校验通过后由业务层调用 {@link #needsUpgrade} 判断是否需要把密码重写为 BCrypt，
- *       实现「用户无感知的一次性升级」。</li>
- * </ol>
- * 待存量密码全部升级完毕后，可移除 MD5 兼容代码。</p>
- *
+ * 密码加密与校验工具：新密码用 BCrypt，同时兼容存量用户的旧 MD5 格式。
+ * MD5 分支不能删：直接切 BCrypt 会让存量用户的 MD5 密码全部无法登录；校验先按 BCrypt，失败回退 MD5，
+ * 通过后由业务层调 {@link #needsUpgrade} 重写为 BCrypt。
  * @author <a href="https://github.com/romansgithub">Roman</a>
  */
 @Component
 public class PasswordUtils {
 
     /**
-     * 兼容旧数据的 MD5 盐值。
+     * 旧数据的 MD5 盐值。
      *
-     * @deprecated 仅用于校验历史遗留的 MD5 密码，新密码一律使用 BCrypt。
-     *             存量数据迁移完成后应连同 {@link #matchesLegacyMd5} 一并删除。
+     * @deprecated 仅用于校验历史 MD5 密码，存量迁移完成后连同 {@link #matchesLegacyMd5} 一并删除。
      */
     @Deprecated
     private static final String LEGACY_SALT = "quan";
 
-    /** BCrypt 强度：10 为默认值，兼顾安全与性能 */
+    /** BCrypt 强度：10 为默认值，兼顾安全与性能。 */
     private static final int BCRYPT_STRENGTH = 10;
 
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder(BCRYPT_STRENGTH);
 
-    /**
-     * 加密密码（BCrypt）。
-     *
-     * @param rawPassword 明文密码
-     * @return BCrypt 哈希值
-     */
+    /** 加密为 BCrypt 哈希，空密码抛 IllegalArgumentException。 */
     public String encode(String rawPassword) {
         if (StrUtil.isBlank(rawPassword)) {
             throw new IllegalArgumentException("密码不能为空");
@@ -58,38 +39,27 @@ public class PasswordUtils {
     }
 
     /**
-     * 校验密码，同时兼容 BCrypt 与历史遗留的 MD5 格式。
-     *
-     * @param rawPassword     明文密码
-     * @param storedPassword  数据库中存储的密码
-     * @return 是否匹配
+     * 校验密码，兼容 BCrypt 与历史遗留的 MD5 两种格式。
      */
     public boolean matches(String rawPassword, String storedPassword) {
         if (StrUtil.isBlank(rawPassword) || StrUtil.isBlank(storedPassword)) {
             return false;
         }
-        // 1. 优先按 BCrypt 校验（新格式）
         if (isBcryptHash(storedPassword)) {
             return passwordEncoder.matches(rawPassword, storedPassword);
         }
-        // 2. 回退按 MD5 校验（历史遗留数据）
         return matchesLegacyMd5(rawPassword, storedPassword);
     }
 
     /**
-     * 判断该密码是否需要在登录成功后升级为 BCrypt。
-     *
-     * @param storedPassword 数据库中存储的密码
-     * @return true 表示仍是旧的 MD5 格式，需要升级
+     * 登录成功后是否需要把该密码重写为 BCrypt：存储值不是 BCrypt 哈希时为 true。
      */
     public boolean needsUpgrade(String storedPassword) {
         return StrUtil.isNotBlank(storedPassword) && !isBcryptHash(storedPassword);
     }
 
     /**
-     * 判断是否为 BCrypt 哈希。
-     *
-     * <p>BCrypt 哈希形如 {@code $2a$10$...}，固定以 {@code $2} 开头、总长 60。</p>
+     * 是否为 BCrypt 哈希：形如 {@code $2a$10$...}，固定以 {@code $2} 开头、总长 60。
      */
     private boolean isBcryptHash(String password) {
         return password.length() == 60 && password.startsWith("$2");
