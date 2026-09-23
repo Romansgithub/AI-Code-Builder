@@ -82,6 +82,49 @@ class RagPropertiesTest {
     }
 
     @Test
+    @DisplayName("默认不打折 —— 折扣会牺牲「要改全局样式却没点名」的需求，必须先实测再启用")
+    void genericFilePenaltyIsOffByDefault() {
+        RagProperties properties = new RagProperties();
+        properties.init();
+
+        assertThat(properties.getGenericFilePenalty())
+                .as("第三轮实测里排后不产生漏召（除 1 条独立漏召外期望文件全在 Top-K 里），"
+                        + "而折扣的代价是即时可见的，所以默认值必须是「行为与改造前一致」的 1.0")
+                .isEqualTo(1.0D);
+    }
+
+    @Test
+    @DisplayName("折扣系数越界（含 NaN）应归一为 1.0，而不是静默放大或翻转分数")
+    void invalidGenericFilePenaltyFallsBack() {
+        RagProperties negative = new RagProperties();
+        negative.setGenericFilePenalty(-0.3D);
+        negative.init();
+        assertThat(negative.getGenericFilePenalty()).isEqualTo(1.0D);
+
+        RagProperties tooLarge = new RagProperties();
+        tooLarge.setGenericFilePenalty(1.5D);
+        tooLarge.init();
+        assertThat(tooLarge.getGenericFilePenalty()).isEqualTo(1.0D);
+
+        RagProperties nan = new RagProperties();
+        nan.setGenericFilePenalty(Double.NaN);
+        nan.init();
+        assertThat(nan.getGenericFilePenalty())
+                .as("NaN 与任何数比较都是 false —— 漏掉这条分支会让向量分乘出 NaN，排序整体失效")
+                .isEqualTo(1.0D);
+    }
+
+    @Test
+    @DisplayName("合法折扣（0 与 1 之间）应原样保留")
+    void validGenericFilePenaltyIsKept() {
+        RagProperties properties = new RagProperties();
+        properties.setGenericFilePenalty(0.9D);
+        properties.init();
+
+        assertThat(properties.getGenericFilePenalty()).isEqualTo(0.9D);
+    }
+
+    @Test
     @DisplayName("上下文上限非正时应回退为 12000，否则检索内容一条也放不进去")
     void invalidContextLimitFallsBack() {
         RagProperties properties = new RagProperties();

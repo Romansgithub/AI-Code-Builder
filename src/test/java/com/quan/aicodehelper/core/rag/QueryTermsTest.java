@@ -223,6 +223,78 @@ class QueryTermsTest {
     }
 
     @Nested
+    @DisplayName("横切文件识别与折扣")
+    class GenericFileCase {
+
+        @Test
+        @DisplayName("全局样式文件应判为横切 —— 它影响整站，跟任何界面需求都「有点关系」")
+        void styleFilesAreGeneric() {
+            assertThat(QueryTerms.isGenericFile("src/styles/main.css")).isTrue();
+            assertThat(QueryTerms.isGenericFile("src/assets/theme.scss")).isTrue();
+        }
+
+        @Test
+        @DisplayName("框架约定入口名应判为横切，但判据必须带上扩展名")
+        void frameworkEntryNamesAreGeneric() {
+            assertThat(QueryTerms.isGenericFile("src/main.js")).isTrue();
+            assertThat(QueryTerms.isGenericFile("src/App.vue")).isTrue();
+            assertThat(QueryTerms.isGenericFile("index.html")).isTrue();
+            assertThat(QueryTerms.isGenericFile("src/router/index.js")).isTrue();
+
+            assertThat(QueryTerms.isGenericFile("docs/index.md"))
+                    .as("index.md 只是同名、不是入口；不限定扩展名就等于按文件名批发")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("业务组件与数据文件不该判为横切 —— 它们正是要被召回的期望文件")
+        void businessFilesAreNotGeneric() {
+            assertThat(QueryTerms.isGenericFile("src/components/Navbar.vue")).isFalse();
+            assertThat(QueryTerms.isGenericFile("src/pages/Guide.vue")).isFalse();
+            assertThat(QueryTerms.isGenericFile("src/data/products.js")).isFalse();
+            assertThat(QueryTerms.isGenericFile(null)).isFalse();
+            assertThat(QueryTerms.isGenericFile("")).isFalse();
+        }
+
+        @Test
+        @DisplayName("默认系数 1.0 时一律不打折，非法值也按关闭处理")
+        void disabledByDefault() {
+            assertThat(QueryTerms.genericFilePenalty(Set.of("字体"), "src/styles/main.css", 1.0D))
+                    .as("装了不等于用了：默认值必须是行为与改造前完全一致的那个")
+                    .isEqualTo(1.0D);
+            assertThat(QueryTerms.genericFilePenalty(Set.of("字体"), "src/styles/main.css", 0D))
+                    .isEqualTo(1.0D);
+            assertThat(QueryTerms.genericFilePenalty(Set.of("字体"), "src/styles/main.css", -0.5D))
+                    .isEqualTo(1.0D);
+            assertThat(QueryTerms.genericFilePenalty(Set.of("字体"), "src/styles/main.css", Double.NaN))
+                    .isEqualTo(1.0D);
+            assertThat(QueryTerms.genericFilePenalty(Set.of("字体"), "src/styles/main.css", 1.2D))
+                    .isEqualTo(1.0D);
+        }
+
+        @Test
+        @DisplayName("开启后只打折横切文件，业务文件不受影响")
+        void appliesOnlyToGenericFiles() {
+            assertThat(QueryTerms.genericFilePenalty(Set.of("版权"), "src/styles/main.css", 0.9D))
+                    .isEqualTo(0.9D);
+            assertThat(QueryTerms.genericFilePenalty(Set.of("版权"), "src/pages/About.vue", 0.9D))
+                    .as("About.vue 既不是框架入口也不是样式 —— 它抢榜首是向量区分度的问题，不该用文件先验去压")
+                    .isEqualTo(1.0D);
+        }
+
+        @Test
+        @DisplayName("需求点名了横切文件时必须豁免")
+        void mentionedFileIsExempt() {
+            Set<String> terms = QueryTerms.extract("把 main.css 里的默认字体换掉");
+
+            assertThat(QueryTerms.genericFilePenalty(terms, "src/styles/main.css", 0.9D))
+                    .as("折扣会牺牲「要改全局文件却没说文件名」的需求，点名是唯一的豁免信号；"
+                            + "漏掉它等于用户已经说清了改哪个文件，反而被系统压下去")
+                    .isEqualTo(1.0D);
+        }
+    }
+
+    @Nested
     @DisplayName("代码标识符抽取")
     class SymbolsOfCase {
 

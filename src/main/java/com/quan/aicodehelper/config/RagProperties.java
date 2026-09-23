@@ -74,6 +74,27 @@ public class RagProperties {
     private double keywordWeight = 0.3D;
 
     /**
+     * 横切文件（全局样式 / 框架入口）在<b>向量分</b>上的折扣系数。
+     *
+     * <p><b>默认 1.0 = 不打折，这是有意的。</b>第三轮实测里 {@code main.css}
+     * 在 8 条「排后」用例中占了 4 次首位，看着像缺陷；但那批用例的期望文件
+     * 全都在 Top-K 里（除了另一条独立漏召），<b>排后不产生漏召</b> ——
+     * 它占的是上下文预算与模型注意力，工程文件数远小于 Top-K 时几乎无代价。
+     *
+     * <p>而折扣的代价是即时可见的：「默认字体加载太慢，想换成系统自带的」
+     * 这类需求期望文件正是 {@code main.css}，又不含文件名，打折后可能直接
+     * 掉出 Top-K。所以它必须靠<b>实测对比</b>来决定是否启用，
+     * 而不是装上一个「看起来更聪明」的默认值。</p>
+     *
+     * <p>启用方法：调成 0.85 ~ 0.95，重跑检索评测，对比
+     * 【排后清单】的榜首占位是否下降、【漏召清单】是否变长。
+     * 两者一起看才作数 —— 只盯着占位下降会把「把正确文件也压下去了」当成成功。</p>
+     *
+     * <p>取值 ≥ 1 或 ≤ 0 时按「关闭」处理（见 {@code QueryTerms#genericFilePenalty}）。</p>
+     */
+    private double genericFilePenalty = 1.0D;
+
+    /**
      * 超过此大小的文件直接跳过索引。
      *
      * <p>工程里偶尔会有生成出来的大文件（打包产物、数据表等），
@@ -193,6 +214,14 @@ public class RagProperties {
             vectorWeight = 0.7D;
             keywordWeight = 0.3D;
         }
+        // 折扣只在 (0,1) 开区间里有意义；其余（含 NaN）一律按「关闭」处理，
+        // 让非法配置退化成与默认值相同的行为，而不是静默放大或翻转分数
+        if (!(genericFilePenalty > 0D) || genericFilePenalty >= 1.0D) {
+            if (genericFilePenalty != 1.0D) {
+                log.warn("RAG 通用文件折扣非法（{}），按不打折处理", genericFilePenalty);
+            }
+            genericFilePenalty = 1.0D;
+        }
         if (embedding == null) {
             embedding = new Embedding();
         }
@@ -200,10 +229,11 @@ public class RagProperties {
             embedding.setBatchSize(10);
         }
         log.info("RAG 配置：enabled={}, topK={}, 单文件上限={}, 上下文上限={} 字符, "
-                        + "权重=向量 {} / 关键词 {}, 切块={} 行（重叠 {}）, "
+                        + "权重=向量 {} / 关键词 {}, 通用文件折扣={}, 切块={} 行（重叠 {}）, "
                         + "embedding 模型={}（启动自检={}）",
                 enabled, topK, maxChunksPerFile, maxContextChars,
-                vectorWeight, keywordWeight, chunkMaxLines, chunkOverlapLines,
+                vectorWeight, keywordWeight, genericFilePenalty,
+                chunkMaxLines, chunkOverlapLines,
                 embedding.getModelName(), embedding.isSelfCheck());
     }
 }

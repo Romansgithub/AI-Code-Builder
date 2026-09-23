@@ -324,6 +324,99 @@ public final class QueryTerms {
     }
 
     /**
+     * 「全局样式」扩展名。这类文件影响整站外观，任何「改一改界面」的需求
+     * 都与它有点关系 —— 它的向量相似度因此天然偏高，判别力却很低。
+     */
+    private static final Set<String> STYLE_EXTENSIONS = Set.of(
+            "css", "scss", "sass", "less", "styl");
+
+    /**
+     * 框架/脚手架的固定入口文件名主干。
+     *
+     * <p>注意这是<b>框架约定</b>而不是某个工程特有的命名 ——
+     * {@code main.js}、{@code App.vue}、{@code index.html} 在任何 Vue 工程里
+     * 都是入口，因此按它们降权不属于「为某个工程调参」。</p>
+     */
+    private static final Set<String> GENERIC_ENTRY_NAMES = Set.of("main", "index", "app");
+
+    /**
+     * 入口名只在这些扩展名上成立 —— 免得把 {@code index.md}、{@code main.json}
+     * 这类同名但无关的文件也算成入口。
+     */
+    private static final Set<String> ENTRY_EXTENSIONS = Set.of(
+            "js", "ts", "jsx", "tsx", "mjs", "cjs", "html", "htm", "vue");
+
+    /**
+     * 这个文件是否属于「横切文件」（cross-cutting）。
+     *
+     * <p><b>它为什么值得单独识别</b>：第三轮实测（2026-09-23，28 条用例）里，
+     * 语义型 20 条中有 8 条虽然召回了期望文件，但首位被占 —— 其中 7 条的占位者
+     * 是 {@code src/styles/main.css}（4 次）与 {@code About.vue}（3 次）。
+     * 前者是全站样式，后者整页是泛化的中文文案，<b>对任何需求都有不低的余弦
+     * 相似度</b>。这类文件的相似度不说明「它就是这个需求要改的」。</p>
+     *
+     * <p><b>它不是文件白名单</b>：判据只有两条结构性规则 ——
+     * 是不是全局样式扩展名、是不是框架约定的入口名。没有任何本工程特有的文件名。</p>
+     *
+     * @see #genericFilePenalty(Set, String, double) 折扣怎么施加
+     */
+    public static boolean isGenericFile(String filePath) {
+        if (filePath == null || filePath.isEmpty()) {
+            return false;
+        }
+        String extension = fileExtension(filePath);
+        if (STYLE_EXTENSIONS.contains(extension)) {
+            return true;
+        }
+        return ENTRY_EXTENSIONS.contains(extension)
+                && GENERIC_ENTRY_NAMES.contains(fileBaseName(filePath));
+    }
+
+    /**
+     * 横切文件在<b>向量分</b>上应乘的系数。
+     *
+     * <p><b>为什么只削向量分</b>：关键词分是「字面对得上」的硬信号
+     * （路径 1.0 / 标识符 0.85 / 正文 0.4），它与「这个文件是否泛化」无关；
+     * 泛化的来源正是「对谁都像」的向量相似度。点名加成同理不能碰 ——
+     * 用户写下 {@code main.css} 时，他就是明确要改它。</p>
+     *
+     * <p><b>默认不打折，且必须能打折到 0 以外的原因</b>：折扣会牺牲
+     * 「明确要改全局文件、却没说文件名」的需求（实测里
+     * 「默认字体加载太慢，想换成系统自带的」就属于这类，期望文件正是
+     * {@code main.css}）。因此它是一个需要实测对比才敢打开的旋钮，
+     * 而不是一个「装了就该用」的开关：</p>
+     * <ul>
+     *   <li>{@code configuredPenalty} ≥ 1 或 ≤ 0（含 NaN）→ 一律返回 1.0，等于关闭；</li>
+     *   <li>文件不是横切文件 → 1.0；</li>
+     *   <li>文件被点名（{@link #mentionsFile}）→ 1.0，点名优先于降权。</li>
+     * </ul>
+     *
+     * @param configuredPenalty 配置的折扣系数，建议区间 0.85 ~ 0.95
+     * @return 应乘在向量分上的系数
+     */
+    public static double genericFilePenalty(Set<String> terms, String filePath,
+                                           double configuredPenalty) {
+        if (!(configuredPenalty > 0D) || configuredPenalty >= 1.0D) {
+            return 1.0D;
+        }
+        if (!isGenericFile(filePath) || mentionsFile(terms, filePath)) {
+            return 1.0D;
+        }
+        return configuredPenalty;
+    }
+
+    /**
+     * 取文件扩展名（小写，不含点）；无扩展名时返回空串。
+     */
+    private static String fileExtension(String filePath) {
+        String path = filePath.toLowerCase(Locale.ROOT);
+        int slash = path.lastIndexOf('/');
+        String fileName = slash >= 0 ? path.substring(slash + 1) : path;
+        int dot = fileName.lastIndexOf('.');
+        return dot > 0 ? fileName.substring(dot + 1) : "";
+    }
+
+    /**
      * 取文件名主干：去掉目录部分与扩展名。
      */
     private static String fileBaseName(String filePath) {

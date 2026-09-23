@@ -111,7 +111,13 @@ public class CodeRetriever {
             double vectorScore = vectorSimilarity(queryVector, chunk);
             double keywordScore = QueryTerms.matchScore(terms, chunk.getSymbols(),
                     chunk.getFilePath(), chunk.getContent());
-            double score = vectorWeight * vectorScore + keywordWeight * keywordScore;
+            // 横切文件（全局样式 / 框架入口）的向量相似度判别力低 ——
+            // 它们与任何需求都「有点关系」。折扣只削向量项：关键词分是字面命中的
+            // 硬信号，点名加成更是明确指令，两者都与「这个文件是否泛化」无关。
+            // 默认系数为 1.0，即不启用。
+            double penalty = QueryTerms.genericFilePenalty(terms, chunk.getFilePath(),
+                    ragProperties.getGenericFilePenalty());
+            double score = vectorWeight * vectorScore * penalty + keywordWeight * keywordScore;
             if (QueryTerms.mentionsFile(terms, chunk.getFilePath())) {
                 score += FILE_MENTION_BONUS;
             }
