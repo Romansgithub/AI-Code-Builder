@@ -246,6 +246,28 @@ class RagEvalRunnerTest {
         }
 
         @Test
+        @DisplayName("报告头必须自证折扣系数 —— 否则两批数字能不能直接比就成了悬案")
+        void printsGenericFilePenalty() {
+            RagEvalResult result = new RagEvalResult();
+            result.setSetName("代码检索召回评测集");
+            result.setSetVersion("v1.1");
+            result.setTotalCases(28);
+            result.setTopK(8);
+            result.setMaxChunksPerFile(3);
+
+            assertThat(result.toReadableReport())
+                    .as("关闭时要写明「关闭」，而不是只印一个 1.0 —— "
+                            + "「1.0 是本来就没打折，还是被打折后又凑回 1.0」不该留给读报告的人去猜")
+                    .contains("通用文件折扣=1.0（关闭）");
+
+            result.setGenericFilePenalty(0.9D);
+            assertThat(result.toReadableReport())
+                    .as("开着时必须显示实际系数：第四轮实测就是报告里看不出折扣开着，"
+                            + "只能去翻 application.yml 才知道 Recall 为什么掉了 7 个百分点")
+                    .contains("通用文件折扣=0.90");
+        }
+
+        @Test
         @DisplayName("向量权重为 0 的配置不印「向量分 > 0」—— 它算得出来但没进总分，印了等于说向量参与过")
         void keywordOnlyModeDoesNotClaimVectorTookPart() {
             RagEvalResult result = new RagEvalResult();

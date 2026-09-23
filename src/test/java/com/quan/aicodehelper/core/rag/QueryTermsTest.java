@@ -234,15 +234,18 @@ class QueryTermsTest {
         }
 
         @Test
-        @DisplayName("框架约定入口名应判为横切，但判据必须带上扩展名")
-        void frameworkEntryNamesAreGeneric() {
-            assertThat(QueryTerms.isGenericFile("src/main.js")).isTrue();
-            assertThat(QueryTerms.isGenericFile("src/App.vue")).isTrue();
-            assertThat(QueryTerms.isGenericFile("index.html")).isTrue();
-            assertThat(QueryTerms.isGenericFile("src/router/index.js")).isTrue();
-
+        @DisplayName("框架入口名不判为横切 —— 「位置恒定」不等于「内容泛化」")
+        void entryFilesAreNotGeneric() {
+            assertThat(QueryTerms.isGenericFile("src/App.vue"))
+                    .as("第四轮实测：折扣把 App.vue 降权后，两条期望它的用例"
+                            + "（页脚版权信息、页面切换过渡）从命中变成漏召 ——"
+                            + "照常出现在上下文里、跟任何需求都不违和，不等于「它对任何需求都是答案」")
+                    .isFalse();
+            assertThat(QueryTerms.isGenericFile("src/main.js")).isFalse();
+            assertThat(QueryTerms.isGenericFile("index.html")).isFalse();
+            assertThat(QueryTerms.isGenericFile("src/router/index.js")).isFalse();
             assertThat(QueryTerms.isGenericFile("docs/index.md"))
-                    .as("index.md 只是同名、不是入口；不限定扩展名就等于按文件名批发")
+                    .as("同名不同类：既不是入口也不是样式，不该有任何折扣")
                     .isFalse();
         }
 

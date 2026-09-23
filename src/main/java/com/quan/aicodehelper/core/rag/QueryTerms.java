@@ -331,32 +331,30 @@ public final class QueryTerms {
             "css", "scss", "sass", "less", "styl");
 
     /**
-     * 框架/脚手架的固定入口文件名主干。
-     *
-     * <p>注意这是<b>框架约定</b>而不是某个工程特有的命名 ——
-     * {@code main.js}、{@code App.vue}、{@code index.html} 在任何 Vue 工程里
-     * 都是入口，因此按它们降权不属于「为某个工程调参」。</p>
-     */
-    private static final Set<String> GENERIC_ENTRY_NAMES = Set.of("main", "index", "app");
-
-    /**
-     * 入口名只在这些扩展名上成立 —— 免得把 {@code index.md}、{@code main.json}
-     * 这类同名但无关的文件也算成入口。
-     */
-    private static final Set<String> ENTRY_EXTENSIONS = Set.of(
-            "js", "ts", "jsx", "tsx", "mjs", "cjs", "html", "htm", "vue");
-
-    /**
      * 这个文件是否属于「横切文件」（cross-cutting）。
      *
      * <p><b>它为什么值得单独识别</b>：第三轮实测（2026-09-23，28 条用例）里，
      * 语义型 20 条中有 8 条虽然召回了期望文件，但首位被占 —— 其中 7 条的占位者
      * 是 {@code src/styles/main.css}（4 次）与 {@code About.vue}（3 次）。
-     * 前者是全站样式，后者整页是泛化的中文文案，<b>对任何需求都有不低的余弦
-     * 相似度</b>。这类文件的相似度不说明「它就是这个需求要改的」。</p>
+     * {@code main.css} 是全站样式，<b>对任何界面需求都有不低的余弦相似度</b>，
+     * 这类文件的相似度不说明「它就是这个需求要改的」。</p>
      *
-     * <p><b>它不是文件白名单</b>：判据只有两条结构性规则 ——
-     * 是不是全局样式扩展名、是不是框架约定的入口名。没有任何本工程特有的文件名。</p>
+     * <p><b>⚠️ 判据只剩「全局样式扩展名」一条，这是第四轮实测砍剩下的。</b>
+     * 初版还有第二条「框架约定入口名」（主干 ∈ {@code main / index / app}），
+     * 当时的理由是「路径固定、任何 Vue 工程都有，不算为本工程调参」——
+     * 这个理由听着成立，实测是错的。折扣开启（0.9）后仅向量与混合组的
+     * <b>漏召由 1 条涨到 3 条</b>（Recall@8 96.4% → 89.3%），新增的两条
+     * （{@code shop-app-semantic-13}「页脚版权信息补上公司全称」、
+     * {@code tour-transition-semantic-18}「页面切换加淡入淡出」）
+     * 期望文件<b>都是 {@code src/App.vue}</b>，且都因入口名规则被降了权。</p>
+     *
+     * <p>错在把「<b>位置恒定</b>」当成了「<b>内容泛化</b>」，两者不是一回事：
+     * 全站样式是<b>横切关注点</b>，跟任何需求都沾一点边；而入口文件（{@code App.vue}）
+     * 承载的是根布局、页脚、路由过渡 —— 需求<b>恰恰好</b>落在这些地方的概率很高。
+     * 它是正确答案，不是「对谁都像」。</p>
+     *
+     * <p><b>它不是文件白名单</b>：判据是结构性规则（扩展名），
+     * 没有任何本工程特有的文件名。</p>
      *
      * @see #genericFilePenalty(Set, String, double) 折扣怎么施加
      */
@@ -364,12 +362,7 @@ public final class QueryTerms {
         if (filePath == null || filePath.isEmpty()) {
             return false;
         }
-        String extension = fileExtension(filePath);
-        if (STYLE_EXTENSIONS.contains(extension)) {
-            return true;
-        }
-        return ENTRY_EXTENSIONS.contains(extension)
-                && GENERIC_ENTRY_NAMES.contains(fileBaseName(filePath));
+        return STYLE_EXTENSIONS.contains(fileExtension(filePath));
     }
 
     /**
@@ -390,6 +383,15 @@ public final class QueryTerms {
      *   <li>文件不是横切文件 → 1.0；</li>
      *   <li>文件被点名（{@link #mentionsFile}）→ 1.0，点名优先于降权。</li>
      * </ul>
+     *
+     * <p><b>⚠️ 判据收窄之后，当前仍建议保持关闭</b>（第四轮实测结论）：「排后」的代价
+     * 接近于零 —— Top-K 没被占满时，被抢走首位的期望文件照样进上下文，它占的是
+     * 字符预算与模型注意力，不是正确文件的位置；而折扣换来的是真实的降权风险。
+     * 那一轮开 0.9 的净账是 Top-1 +1、Recall −2，即<b>拿零代价的东西换来了真代价</b>。
+     * 而且 17 号（期望 {@code main.css}）的期望文件仍排第 2，榜首被
+     * {@code package.json} 占走（{@code kw=0}，纯向量）—— 榜首位置是<b>竞争性</b>的，
+     * 压下一个总有下一个补位。它的定位是「工程变大、文件数逼近 Top-K 时的预防手段」，
+     * 不是当前缺口的修复。</p>
      *
      * @param configuredPenalty 配置的折扣系数，建议区间 0.85 ~ 0.95
      * @return 应乘在向量分上的系数

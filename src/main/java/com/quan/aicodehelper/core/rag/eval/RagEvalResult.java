@@ -30,6 +30,17 @@ public class RagEvalResult {
     private int maxChunksPerFile;
 
     /**
+     * 本次运行生效的全局样式折扣系数（1.0 = 关闭）。
+     *
+     * <p><b>为什么它必须打进报告头</b>：它决定这批数字是在哪套配置下跑出来的，
+     * 而「跨批次比较」正是这套评测的全部用法。第四轮实测就吃过这个亏 ——
+     * 报告里看不出折扣开着，得去翻 {@code application.yml} 才知道那一轮的
+     * Recall 为什么掉了 7 个百分点。配置与数字必须写在同一份报告里，
+     * 否则下一轮的人（包括未来的自己）没法判断两批数据能不能直接比。</p>
+     */
+    private double genericFilePenalty = 1.0D;
+
+    /**
      * embedding 是否可用。为 false 时全部指标都不可信 ——
      * 检索会退化成纯关键词，而「纯关键词」那一组恰好也是本次消融的一组，
      * 两者会混为一谈，让人误以为「向量没用」。
@@ -177,7 +188,8 @@ public class RagEvalResult {
         sb.append("│ 评测集：").append(setName).append(' ').append(setVersion)
                 .append("，用例 ").append(totalCases).append(" 条\n");
         sb.append("│ 参数：topK=").append(topK)
-                .append("，单文件片段上限=").append(maxChunksPerFile).append('\n');
+                .append("，单文件片段上限=").append(maxChunksPerFile)
+                .append("，通用文件折扣=").append(penaltyLabel()).append('\n');
         sb.append("│ 索引：");
         for (AppIndexStat app : apps) {
             sb.append(app.getLabel()).append("(").append(app.getChunks()).append(" 片段) ");
@@ -291,6 +303,19 @@ public class RagEvalResult {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * 折扣系数在报告里的显示形式。
+     *
+     * <p>关闭时显式写成 {@code 1.0（关闭）} 而不是只印 {@code 1.0}：
+     * 「这一轮到底打没打折」不该留给读报告的人去猜。报告必须自证配置，
+     * 否则两批数据能不能直接比就成了悬案 —— 而它偏偏是这套评测最常见的用法。</p>
+     */
+    private String penaltyLabel() {
+        return genericFilePenalty >= 1.0D
+                ? String.format("%.1f（关闭）", genericFilePenalty)
+                : String.format("%.2f", genericFilePenalty);
     }
 
     private static String pct(double value) {

@@ -91,6 +91,10 @@ public class RagEvalRunner {
         result.setTotalCases(set.getCases().size());
         result.setTopK(ragProperties.getTopK());
         result.setMaxChunksPerFile(ragProperties.getMaxChunksPerFile());
+        // 折扣系数也要进报告头：它决定这批数字与上一批能不能直接比。
+        // 第四轮实测时报告里没有这一项，只能去翻 application.yml 才知道
+        // Recall 为什么掉了 7 个百分点 —— 配置与数字必须写在同一份报告里
+        result.setGenericFilePenalty(ragProperties.getGenericFilePenalty());
         // 先记下来：向量不可用时所有指标都会退化成纯关键词，
         // 而「纯关键词」恰好也是消融里的一组，两者混在一起会被误读成「向量没有价值」
         result.setEmbeddingAvailable(embeddingClient.available());
